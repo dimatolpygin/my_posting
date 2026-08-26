@@ -8,6 +8,8 @@ services:
   app:
     build:
       target: dev
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     environment:
       NODE_ENV: development
       LOG_LEVEL: ${LOG_LEVEL:-debug}

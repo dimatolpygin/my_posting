@@ -41,15 +41,15 @@
 - локальный запуск и прогон миграций.
 
 **Критерии приёмки** (закрытие → tag `stage-0-done`):
-- [ ] `docker compose up -d` поднимает `postgres` и `app`, оба healthy
-- [ ] `curl http://localhost:3000/health` отвечает 200
-- [ ] Миграции `0001`–`0021` применены, таблицы `sources`, `articles`, `posts`,
+- [x] `docker compose up -d` поднимает `postgres` и `app`, оба healthy
+- [x] `curl http://localhost:3000/health` отвечает 200
+- [x] Миграции `0001`–`0021` применены, таблицы `sources`, `articles`, `posts`,
       `groups`, `prompts` существуют
-- [ ] Панель на `http://localhost:3000` пускает по `ADMIN_LOGIN`/`ADMIN_PASSWORD`
+- [x] Панель на `http://localhost:3000` пускает по `ADMIN_LOGIN`/`ADMIN_PASSWORD`
       и показывает пустые списки без ошибок
-- [ ] В логах контейнера русский `pino-pretty`, время московское
-- [ ] `git log` в `my_posting` — только свои коммиты, ветка `dev`
-- [ ] `git status` не показывает `dostupi_my.txt`
+- [x] В логах контейнера русский `pino-pretty`, время московское
+- [x] `git log` в `my_posting` — только свои коммиты, ветка `dev`
+- [x] `git status` не показывает `dostupi_my.txt`
 
 ---
 

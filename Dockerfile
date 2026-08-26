@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
 
+# Реестр npm. По умолчанию официальный; на машинах, откуда registry.npmjs.org
+# не отвечает (у контейнера свой маршрут в интернет, мимо VPN хоста), сборка
+# запускается с зеркалом:
+#   docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 FROM node:22-alpine AS base
 WORKDIR /app
 ENV NODE_ENV=production
@@ -11,6 +17,8 @@ ENV TZ=Europe/Moscow
 
 # --- слой зависимостей: пересобирается только при изменении package*.json ---
 FROM base AS deps
+ARG NPM_REGISTRY
+RUN npm config set registry "$NPM_REGISTRY"
 COPY package*.json ./
 RUN npm ci --omit=dev
 
@@ -20,6 +28,8 @@ RUN npm ci --omit=dev
 # `node --watch` правки хостовых файлов не видит.
 FROM base AS dev
 ENV NODE_ENV=development
+ARG NPM_REGISTRY
+RUN npm config set registry "$NPM_REGISTRY"
 COPY package*.json ./
 RUN npm install
 COPY . .

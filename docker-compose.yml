@@ -22,6 +22,10 @@ services:
     build:
       context: .
       target: prod
+      args:
+        # Зеркало npm для машин, откуда registry.npmjs.org не отвечает.
+        # Значение берётся из .env, дефолт — официальный реестр.
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     restart: unless-stopped
     depends_on:
       postgres:

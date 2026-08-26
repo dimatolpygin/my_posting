@@ -156,13 +156,13 @@ export function page({ title, active, user, heading, sub, body, message }) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — Автопостинг ВК</title>
+<title>${esc(title)} — Автопостинг в Одноклассники</title>
 <style>${STYLES}</style>
 </head>
 <body>
 <div class="shell">
   <aside>
-    <div class="brand">Автопостинг ВК<small>панель управления</small></div>
+    <div class="brand">Автопостинг в Одноклассники<small>панель управления</small></div>
     <nav>${nav}</nav>
     <div class="foot">
       Вход: <strong>${esc(user?.login ?? '')}</strong><br>
@@ -198,7 +198,7 @@ export function loginPage({ login = '', next = '/', message } = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Вход — Автопостинг ВК</title>
+<title>Вход — Автопостинг в Одноклассники</title>
 <style>${STYLES}</style>
 </head>
 <body>

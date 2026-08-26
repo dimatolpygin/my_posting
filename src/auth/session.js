@@ -10,7 +10,7 @@ import { config } from '../config.js';
  * Это выполняет требование «есть вход — должен быть и выход» без лишней таблицы.
  */
 
-export const COOKIE_NAME = 'vkp_session';
+export const COOKIE_NAME = 'mp_session';
 const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 суток
 
 function base64url(buffer) {

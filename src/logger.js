@@ -7,7 +7,10 @@ const transport = config.log.pretty
       target: 'pino-pretty',
       options: {
         colorize: true,
-        translateTime: 'dd.mm.yyyy HH:MM:ss',
+        // Префикс SYS: обязателен. Без него pino-pretty печатает время в UTC,
+        // хотя контейнер живёт в Europe/Moscow, — и логи расходятся с post_at
+        // и расписанием на три часа.
+        translateTime: 'SYS:dd.mm.yyyy HH:MM:ss',
         ignore: 'pid,hostname',
         messageKey: 'msg',
       },

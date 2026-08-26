@@ -2336,7 +2336,9 @@ export function panelRouter() {
               <td>${esc(item.groupName)}</td>
               <td>${esc(item.label ?? '')}<br><span class="hint">${
                 item.kind === 'post' ? 'пост готов' : 'нужна генерация'
-              }${item.date ? ` · материал от ${esc(formatDate(item.date))}` : ''}</span></td>
+              }${item.cluster ? ` · ${esc(item.cluster)}` : ''}${
+                item.date ? ` · материал от ${esc(formatDate(item.date))}` : ''
+              }</span></td>
               <td class="hint">${esc(formatDate(item.postAt))}</td>
             </tr>`,
           )

@@ -20,7 +20,7 @@ const POST_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string', description: 'Короткий цепляющий заголовок поста' },
-    body: { type: 'string', description: 'Полный текст поста для стены ВК' },
+    body: { type: 'string', description: 'Полный текст темы для группы Одноклассников' },
   },
   required: ['title', 'body'],
   additionalProperties: false,

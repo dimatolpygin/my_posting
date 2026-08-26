@@ -97,7 +97,7 @@ export const config = {
     token: env('POSTMYPOST_TOKEN'),
     projectId: envInt('POSTMYPOST_PROJECT_ID', 0),
     // baseUrl вынесен по той же причине, что у kie.ai: в dev на него подставляется
-    // локальная заглушка (/_debug/pmp), чтобы гонять публикацию без реальных постов в ВК.
+    // локальная заглушка (/_debug/pmp), чтобы гонять публикацию без реальных тем в группе.
     baseUrl: env('POSTMYPOST_BASE_URL', { fallback: 'https://api.postmypost.io/v4.1' }),
     timeoutMs: envInt('POSTMYPOST_TIMEOUT_MS', 30_000),
   },

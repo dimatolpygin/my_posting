@@ -66,7 +66,7 @@ export function panelRouter() {
       const body = `
         <div class="grid">
           ${stat(`${s.sources_active} из ${s.sources_total}`, 'Источников активно')}
-          ${stat(s.groups_active, 'Групп ВК активно')}
+          ${stat(s.groups_active, 'Групп ОК активно')}
           ${stat(s.articles, 'Материалов найдено')}
           ${stat(s.topics, 'Уникальных тем')}
           ${stat(s.posts, 'Постов сгенерировано')}
@@ -374,9 +374,9 @@ export function panelRouter() {
           <p class="hint" style="margin:0 0 12px">
             Границы, по которым пост принимается или отправляется на переделку.
             Ноль означает «без ограничения»: сколько написала нейросеть, столько и уйдёт
-            в группу. В записи ВК помещается около 16 тысяч символов, так что упереться
-            в площадку обзором нельзя; в ленте пост всё равно сворачивается кнопкой
-            «Показать полностью» примерно на 350 символах.
+            в группу. В теме Одноклассников помещается заведомо больше, чем наши
+            1500-2500 знаков, так что упереться в площадку постом нельзя; в ленте текст
+            всё равно сворачивается кнопкой «Ещё» примерно на 350 символах.
           </p>
           <form method="post" action="/settings/post-length">
             <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
@@ -511,9 +511,9 @@ export function panelRouter() {
           <h2 style="margin-top:0">Режим публикации</h2>
           <p style="margin:0 0 10px">Сейчас: ${publishModeTag(mode)}</p>
           <p class="hint" style="margin:0 0 12px">
-            В режиме «черновики» посты создаются в postmypost со статусом 4 и на стену
+            В режиме «черновики» посты создаются в postmypost со статусом 4 и в группу
             не уходят — их видно только в интерфейсе postmypost. «Реальная публикация»
-            ставит статус 5, и пост появляется в группе ВК в назначенное время.
+            ставит статус 5, и тема появляется в группе ОК в назначенное время.
           </p>
           <form method="post" action="/settings/publish-mode">
             <input type="hidden" name="mode" value="${mode === 'live' ? 'draft' : 'live'}">
@@ -563,7 +563,7 @@ export function panelRouter() {
       res.redirect(
         `/settings?ok=${encodeURIComponent(
           mode === 'live'
-            ? 'Включена реальная публикация — посты будут уходить на стену группы'
+            ? 'Включена реальная публикация — темы будут уходить в группу'
             : 'Включён режим черновиков',
         )}`,
       );
@@ -988,7 +988,7 @@ export function panelRouter() {
     }
   });
 
-  // Синхронизация групп ВК из postmypost. Кнопка есть и в разделе «Группы»,
+  // Синхронизация групп ОК из postmypost. Кнопка есть и в разделе «Группы»,
   // и в форме публикации — поле back говорит, куда вернуться.
   router.post('/groups/sync', async (req, res) => {
     const back = typeof req.body.back === 'string' && req.body.back.startsWith('/')
@@ -996,7 +996,7 @@ export function panelRouter() {
       : '/groups';
     try {
       const result = await syncGroups();
-      const summary = `Групп ВК из postmypost: ${result.total} (новых ${result.added}` +
+      const summary = `Групп ОК из postmypost: ${result.total} (новых ${result.added}` +
         (result.broken ? `, отвалившихся ${result.broken}` : '') +
         (result.hidden ? `, скрытых ${result.hidden}` : '') + ')';
       res.redirect(`${back}?ok=${encodeURIComponent(summary)}`);
@@ -1127,7 +1127,7 @@ export function panelRouter() {
           </form>
         </div>
         <div class="card">
-          <h2 style="margin-top:0">Публикация в ВК</h2>
+          <h2 style="margin-top:0">Публикация в Одноклассники</h2>
           ${await publicationsTable(post.id)}
           ${post.image_url
             ? await publishForm(post, Number.parseInt(req.query.group, 10))
@@ -1145,7 +1145,7 @@ export function panelRouter() {
           active: '/posts',
           user: req.user,
           heading: `Пост #${post.id}`,
-          sub: 'Текст в том виде, в котором уйдёт на стену группы.',
+          sub: 'Текст в том виде, в котором уйдёт в группу.',
           message: buildSourceMessage(req.query),
           body,
         }),
@@ -1155,7 +1155,7 @@ export function panelRouter() {
     }
   });
 
-  // ── Группы ВК ────────────────────────────────────────────────────────────
+  // ── Группы ОК ────────────────────────────────────────────────────────────
   router.get('/groups', async (req, res, next) => {
     try {
       const list = await groups.listAll();
@@ -1179,7 +1179,7 @@ export function panelRouter() {
                 <td><strong>${esc(group.name)}</strong><br>
                     <span class="hint">${esc(group.login ?? '')} · аккаунт
                     ${group.pmp_account_id}${
-                      group.external_id ? ` · ВК ${esc(group.external_id)}` : ''
+                      group.external_id ? ` · ОК ${esc(group.external_id)}` : ''
                     }</span></td>
                 <td>
                   <form class="inline" method="post" action="/groups/${group.id}/posts-per-day">
@@ -1213,7 +1213,7 @@ export function panelRouter() {
               </tr>`;
             })
             .join('\n')
-        : `<tr><td colspan="7" class="empty">Групп нет. Подключите группу ВК в postmypost
+        : `<tr><td colspan="7" class="empty">Групп нет. Подключите группу ОК в postmypost
              и нажмите «Обновить список из postmypost».</td></tr>`;
 
       const removedBlock = removed.length
@@ -1264,7 +1264,7 @@ export function panelRouter() {
             </form>
           </div>
           <p class="hint" style="margin:10px 0 0">
-            Группы берутся из проекта postmypost (только ВК), числовые id вручную вводить
+            Группы берутся из проекта postmypost (только ОК), числовые id вручную вводить
             не нужно: подключили группу там - нажали кнопку здесь. «Постов в день»
             ограничивает публикации в группу за сутки по МСК; выключенная группа посты
             не получает.
@@ -1274,10 +1274,10 @@ export function panelRouter() {
 
       res.type('html').send(
         page({
-          title: 'Группы ВК',
+          title: 'Группы ОК',
           active: '/groups',
           user: req.user,
-          heading: 'Группы ВК',
+          heading: 'Группы ОК',
           sub: 'Список приходит из postmypost. Клиент включает нужные группы и задаёт объём постинга.',
           message: buildSourceMessage(req.query),
           body,
@@ -1536,7 +1536,7 @@ export function panelRouter() {
             Система соберёт материалы выбранных источников за период, отбросит те, по которым
             пост уже был, и разложит очередь от свежих к старым: каждый день — не больше
             заданного числа постов на группу. Публикации создаются сразу, но встают
-            в postmypost на свои даты, поэтому стена наполняется постепенно.
+            в postmypost на свои даты, поэтому группа наполняется постепенно.
           </p>
           <form method="post" action="/archive">
             <div style="display:flex;gap:30px;flex-wrap:wrap">
@@ -1822,7 +1822,7 @@ export function panelRouter() {
                     : '<span class="hint">нет обложки</span>'}</td>
                 <td><a href="/posts/${item.post_id}">${esc(item.post_title ?? `пост #${item.post_id}`)}</a><br>
                     <span class="hint">${esc(item.topic_name ?? item.topic_key ?? '')}</span></td>
-                <td>${esc(item.group_name)}<br>${vkLinkCell(item)}</td>
+                <td>${esc(item.group_name)}<br>${okLinkCell(item)}</td>
                 <td class="hint">${esc(formatDate(item.post_at ?? item.created_at))}</td>
                 <td>${item.error
                     ? `<span class="tag off">не уехал</span><br><span class="hint">${esc(cut(item.error, 160))}</span>`
@@ -1843,7 +1843,7 @@ export function panelRouter() {
 
       const body = `<div class="grid">
           ${stat(totals.total, 'Всего публикаций')}
-          ${stat(totals.live, 'На стену (live)')}
+          ${stat(totals.live, 'В группу (live)')}
           ${stat(totals.failed, 'Со сбоем')}
         </div>
         <div class="card">
@@ -1853,7 +1853,7 @@ export function panelRouter() {
             <a href="/published?only=ok" class="tag ${only === 'ok' ? 'on' : 'off'}"
                style="text-decoration:none">уехавшие</a>
             <a href="/published?only=live" class="tag ${only === 'live' ? 'on' : 'off'}"
-               style="text-decoration:none">на стену</a>
+               style="text-decoration:none">в группу</a>
             <a href="/published?only=failed" class="tag ${only === 'failed' ? 'on' : 'off'}"
                style="text-decoration:none">со сбоем</a>
             ${groupFilter ? ` · ${groupFilter}` : ''}
@@ -1864,8 +1864,8 @@ export function panelRouter() {
             <tbody>${rows}</tbody>
           </table>
           <p class="hint" style="margin:12px 0 0">
-            Ссылка на запись в ВК появляется только у реальной публикации: у черновика
-            записи на стене ещё нет, поэтому ссылка ведёт на саму группу. Кнопка
+            Ссылка на тему в ОК появляется только у реальной публикации: у черновика
+            темы в группе ещё нет, поэтому ссылка ведёт на саму группу. Кнопка
             «Найти ссылку» перечитывает публикацию в postmypost - ей есть смысл
             пользоваться после того, как отложенный пост вышел.
           </p>
@@ -1888,11 +1888,14 @@ export function panelRouter() {
   });
 
   /**
-   * Подтянуть ссылку на запись в ВК из postmypost. Отдельной кнопкой, а не при
-   * публикации: в момент создания записи на стене ещё нет — ни у черновика,
+   * Подтянуть адрес темы в Одноклассниках из postmypost. Отдельной кнопкой, а не при
+   * публикации: в момент создания темы ещё не существует — ни у черновика,
    * ни у отложенного поста.
+   *
+   * Ссылка нужна не для красоты: `ok.ru/group/{id}/topic/{id}` — это страница,
+   * позицию которой мы потом проверяем в Яндексе.
    */
-  router.post('/publications/:id/vk-link', async (req, res) => {
+  router.post('/publications/:id/ok-link', async (req, res) => {
     const back = String(req.body.back ?? '/published');
     try {
       const id = Number.parseInt(req.params.id, 10);
@@ -1901,17 +1904,17 @@ export function panelRouter() {
       if (!row.pmp_publication_id) throw new Error('У этой записи нет id в postmypost');
 
       const payload = await pmp.publication(row.pmp_publication_id);
-      const url = pmp.vkUrlFrom(payload);
+      const url = pmp.okUrlFrom(payload);
       if (!url) {
         throw new Error(
-          'postmypost не отдал адрес записи в ВК. Так бывает у черновика и у отложенного ' +
-            'поста, который ещё не вышел: записи на стене пока не существует.',
+          'postmypost не отдал адрес темы в ОК. Так бывает у черновика и у отложенного ' +
+            'поста, который ещё не вышел: темы в группе пока не существует.',
         );
       }
-      await publications.setVkUrl(id, url);
+      await publications.setOkUrl(id, url);
       res.redirect(`${back}?ok=${encodeURIComponent(`Ссылка найдена: ${url}`)}`);
     } catch (error) {
-      logger.error(errFields(error), 'Поиск ссылки на пост в ВК не удался');
+      logger.error(errFields(error), 'Поиск адреса темы в ОК не удался');
       res.redirect(`${back}?err=${encodeURIComponent(error.message)}`);
     }
   });
@@ -2065,7 +2068,7 @@ export function panelRouter() {
 
     if (list.length === 0) {
       return `<p class="hint" style="margin:0 0 10px">
-          Групп в базе нет. Список берётся из postmypost: подключите группу ВК там
+          Групп в базе нет. Список берётся из postmypost: подключите группу ОК там
           и нажмите кнопку ниже.</p>
         ${syncButton}`;
     }
@@ -2099,7 +2102,7 @@ export function panelRouter() {
     return `<form method="post" action="/posts/${post.id}/publish">
         <div style="margin:0 0 10px">${checks}</div>
         <button type="submit" data-busy="Отправляю в postmypost…">${
-          mode === 'live' ? 'Опубликовать на стену' : 'Создать черновик в postmypost'
+          mode === 'live' ? 'Опубликовать в группу' : 'Создать черновик в postmypost'
         }</button>
         <span class="hint" style="margin-left:8px">режим: ${publishModeTag(mode)}</span>
       </form>
@@ -2351,8 +2354,8 @@ function stat(value, label) {
 }
 
 /**
- * Состояние подключения аккаунта в postmypost. У ВК токен истекает (по брифу — раз
- * в три месяца), и клиент должен видеть это в списке, а не узнавать из сбоя постинга.
+ * Состояние подключения аккаунта в postmypost. Доступ к группе рано или поздно
+ * отваливается, и это должно быть видно в списке, а не узнаваться из сбоя постинга.
  */
 function connectionTag(group) {
   if (group.connection_status === null) return '<span class="hint">неизвестно</span>';
@@ -2558,17 +2561,17 @@ function errorContext(item) {
 }
 
 /**
- * Ссылка «куда уехал пост». У реальной публикации это запись на стене (адрес
- * приходит из postmypost кнопкой), у черновика записи ещё нет — ведём на группу,
+ * Ссылка «куда уехала тема». У реальной публикации это адрес темы в группе (приходит
+ * из postmypost кнопкой), у черновика темы ещё нет — ведём на саму группу,
  * чтобы ссылка в логе всегда была рабочей, а не мёртвой.
  */
-function vkLinkCell(item) {
-  if (item.vk_url) {
-    return `<a href="${esc(item.vk_url)}" target="_blank" rel="noopener">пост в ВК ↗</a>`;
+function okLinkCell(item) {
+  if (item.post_url) {
+    return `<a href="${esc(item.post_url)}" target="_blank" rel="noopener">тема в ОК ↗</a>`;
   }
-  const wall = groupWallUrl(item);
+  const wall = groupUrl(item);
   const refresh = item.pmp_publication_id
-    ? `<form class="inline" method="post" action="/publications/${item.id}/vk-link">
+    ? `<form class="inline" method="post" action="/publications/${item.id}/ok-link">
          <input type="hidden" name="back" value="/published">
          <button class="ghost small" type="submit">Найти ссылку</button>
        </form>`
@@ -2576,11 +2579,17 @@ function vkLinkCell(item) {
   return `${wall ? `<a href="${esc(wall)}" target="_blank" rel="noopener">группа ↗</a> ` : ''}${refresh}`;
 }
 
-/** Адрес группы ВК: по короткому имени, а если его нет — по числовому id сообщества. */
-function groupWallUrl(item) {
-  if (item.group_login) return `https://vk.com/${item.group_login}`;
-  const external = String(item.group_external_id ?? '').trim();
-  if (/^-?\d+$/.test(external)) return `https://vk.com/club${external.replace('-', '')}`;
+/**
+ * Адрес группы в Одноклассниках: по короткому имени, а если его нет — по числовому id.
+ *
+ * Id группы в ОК положительный (`ok.ru/group/70000055464414`) — в отличие от ВК, где
+ * id сообщества шёл со знаком минус. Минус на всякий случай снимаем: аккаунт мог
+ * приехать из старых данных.
+ */
+function groupUrl(item) {
+  if (item.group_login) return `https://ok.ru/${item.group_login}`;
+  const external = String(item.group_external_id ?? '').trim().replace('-', '');
+  if (/^\d+$/.test(external)) return `https://ok.ru/group/${external}`;
   return null;
 }
 

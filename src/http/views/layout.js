@@ -17,7 +17,7 @@ export function esc(value) {
 
 const NAV = [
   { href: '/', title: 'Обзор' },
-  { href: '/groups', title: 'Группы ВК' },
+  { href: '/groups', title: 'Группы ОК' },
   { href: '/sources', title: 'Источники' },
   { href: '/posts', title: 'Посты' },
   { href: '/settings', title: 'Настройки' },

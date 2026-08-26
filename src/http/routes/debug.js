@@ -229,13 +229,13 @@ export function debugRouter() {
    *
    * Режим задаётся сегментом пути (клиент дописывает `/upload/init` к baseUrl):
    *   .../_debug/pmp/badaccount/...  аккаунты отдают connection_status 0 (отвалились)
-   *   .../_debug/pmp/noaccounts/...  групп ВК в проекте нет
+   *   .../_debug/pmp/noaccounts/...  групп ОК в проекте нет
    *   .../_debug/pmp/uploadfail/...  загрузка картинки завершается ошибкой (status 2)
    *   .../_debug/pmp/slowupload/...  загрузка вечно в работе (проверка таймаута)
    *   .../_debug/pmp/fail2/...       первые 2 запроса /upload/init отдают 503 (ретраи)
    *   .../_debug/pmp/pubfail/...     создание публикации отдаёт 422 (сбой одной группы)
    *   .../_debug/pmp/delete422/...   удаление отдаёт известный баг 422 при успехе
-   *   .../_debug/pmp/vklink/...      публикация отдаёт адрес записи на стене ВК
+   *   .../_debug/pmp/oklink/...      публикация отдаёт адрес темы в группе ОК
    * Флаги сочетаются через дефис.
    */
   let pmpUploads = 0;
@@ -250,13 +250,14 @@ export function debugRouter() {
     const flags = pmpFlags(req);
     if (flags.includes('noaccounts')) return res.json([]);
     const connection = flags.includes('badaccount') ? 0 : 1;
-    // Третий аккаунт — Telegram: проверяем, что фильтр по chanel_id = 2 работает
-    // и в группы ВК не попадает канал.
+    // Третий аккаунт — Telegram: проверяем, что фильтр по каналу работает и в группы
+    // ОК не попадает чужая соцсеть. Id групп ОК положительные, без минуса, как у живого
+    // API, — на этом ловится код, оставшийся от ВК.
     return res.json([
-      { id: 900001, chanel_id: 2, external_id: '-100001', name: 'Заглушка ВК первая',
-        login: 'stub_vk_1', connection_status: connection },
-      { id: 900002, chanel_id: 2, external_id: '-100002', name: 'Заглушка ВК вторая',
-        login: 'stub_vk_2', connection_status: connection },
+      { id: 900001, chanel_id: 5, external_id: '70000000000001', name: 'Заглушка ОК первая',
+        login: null, connection_status: connection },
+      { id: 900002, chanel_id: 5, external_id: '70000000000002', name: 'Заглушка ОК вторая',
+        login: null, connection_status: connection },
       { id: 900003, chanel_id: 6, external_id: '@stub', name: 'Заглушка Telegram',
         login: 'stub_tg', connection_status: 1 },
     ]);
@@ -320,19 +321,21 @@ export function debugRouter() {
   });
 
   /**
-   * Публикация целиком. Нужна разделу «Опубликовано»: адрес записи на стене живой API
-   * отдаёт только после реальной публикации, и без флага заглушка ведёт себя так же —
-   * ссылки в ответе нет. Флаг `vklink` изображает уже вышедший пост.
+   * Публикация целиком. Нужна разделу «Опубликовано»: адрес темы живой API отдаёт
+   * только после реальной публикации, и без флага заглушка ведёт себя так же —
+   * ссылки в ответе нет. Флаг `oklink` изображает уже вышедшую тему.
    */
   router.get(pmpPath('/publications/:id'), (req, res) => {
     const id = Number.parseInt(req.params.id, 10);
-    const published = pmpFlags(req).includes('vklink');
+    const published = pmpFlags(req).includes('oklink');
     return res.json([{
       id,
       publication_status: published ? 1 : 4,
       details: [{
         publication_type: 1,
-        ...(published ? { link: `https://vk.com/wall-100001_${id % 10_000}` } : {}),
+        ...(published
+          ? { link: `https://ok.ru/group/70000000000001/topic/${155_000_000_000 + id}` }
+          : {}),
       }],
     }]);
   });

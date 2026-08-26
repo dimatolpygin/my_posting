@@ -6,19 +6,21 @@ import { log } from '../logger.js';
 const logger = log('группы');
 
 /**
- * Список групп ВК из postmypost → в БД.
+ * Список групп Одноклассников из postmypost → в БД.
  *
- * Клиент подключает группу в postmypost, а числовые id в панель не вписывает.
+ * Группа подключается в postmypost, а числовые id в панель руками не вписываются.
  *
- * Фильтр по `chanel_id = 2` (ВК) стоит в клиенте: в проекте могут быть и Telegram,
- * и Instagram, а этот проект — про ВК.
+ * Фильтр по каналу стоит в клиенте postmypost: в одном проекте могут висеть
+ * аккаунты разных соцсетей, а нам нужны только ОК. Номер канала — в настройке
+ * `pmp_chanel_id`, чтобы переключить соцсеть можно было без правки кода.
  *
  * Скрытые группы синхронизация не возвращает: если клиент удалил группу из панели,
  * она не должна всплывать обратно при каждом обновлении списка. Вернуть её можно
  * кнопкой в разделе «Группы» — там видно, что она скрыта, а не потеряна.
  */
 export async function syncGroups() {
-  const accounts = await pmp.vkAccounts();
+  const chanelId = await settings.getInt('pmp_chanel_id', pmp.CHANEL_OK);
+  const accounts = await pmp.okAccounts(chanelId);
   const defaultPerDay = await settings.getInt('default_posts_per_day', 10);
 
   let added = 0;
@@ -38,8 +40,15 @@ export async function syncGroups() {
   }
 
   logger.info(
-    { всего: accounts.length, добавлено: added, обновлено: updated, отвалилось: broken, скрыто: hidden },
-    `Групп ВК в postmypost: ${accounts.length} (новых ${added}, отвалившихся ${broken}` +
+    {
+      канал: chanelId,
+      всего: accounts.length,
+      добавлено: added,
+      обновлено: updated,
+      отвалилось: broken,
+      скрыто: hidden,
+    },
+    `Групп ОК в postmypost: ${accounts.length} (новых ${added}, отвалившихся ${broken}` +
       (hidden ? `, скрытых ${hidden}` : '') + ')',
   );
   return { total: accounts.length, added, updated, broken, hidden };

@@ -167,9 +167,9 @@ export async function findById(id) {
   return rows[0] ?? null;
 }
 
-/** Адрес поста на стене — приходит от postmypost уже после реальной публикации. */
-export async function setVkUrl(id, url) {
-  await query('UPDATE publications SET vk_url = $2 WHERE id = $1', [id, url]);
+/** Адрес темы в группе — приходит от postmypost уже после реальной публикации. */
+export async function setOkUrl(id, url) {
+  await query('UPDATE publications SET post_url = $2 WHERE id = $1', [id, url]);
 }
 
 export async function countAll() {

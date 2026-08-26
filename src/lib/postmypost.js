@@ -5,7 +5,7 @@ import { log } from '../logger.js';
 const logger = log('postmypost');
 
 /**
- * Клиент postmypost v4.1 — через него пост уходит на стену группы ВК.
+ * Клиент postmypost v4.1 — через него тема уходит в группу Одноклассников.
  *
  * Особенности API, из-за которых нужен свой клиент:
  *
@@ -17,14 +17,22 @@ const logger = log('postmypost');
  * 3. **`project_id` обязателен почти везде** — в теле (POST) или в query (GET/DELETE).
  * 4. **Время только с оффсетом МСК.** `post_at` без `+03:00` или в UTC уедет на три часа.
  * 5. **`POST /publications` не ретраится.** Повтор после фактически созданной публикации
- *    даёт дубль на стене группы, а это видит подписчик. Ретраятся только GET и `/upload/*`.
+ *    даёт дубль в группе, а это видит подписчик. Ретраятся только GET и `/upload/*`.
  */
 
 /** Ошибки, которые повтором не лечатся: токен, права, валидация тела. */
 const FATAL_STATUS = new Set([400, 401, 403, 404, 422]);
 
-/** chanel_id соцсети. В API опечатка — поле называется именно `chanel_id`. */
-export const CHANEL_VK = 2;
+/**
+ * chanel_id соцсети. В API опечатка — поле называется именно `chanel_id`.
+ *
+ * Одноклассники — 5. В справочнике postmypost этого значения нет (список там неполон),
+ * снято с живого `GET /accounts?project_id=…` 26.08.2026. ВК был 2, Telegram — 6.
+ *
+ * Это дефолт, а не константа на все случаи: рабочее значение читается из настройки
+ * `pmp_chanel_id` и приходит сюда параметром — канал переключается без правки кода.
+ */
+export const CHANEL_OK = 5;
 
 /** publication_status при создании: 4 — черновик, 5 — в очередь на реальную публикацию. */
 export const STATUS_DRAFT = 4;
@@ -96,7 +104,7 @@ async function call(method, path, { json, retries = 2 } = {}) {
 /**
  * Живой API отдаёт не то, что обещает справочник: `/accounts` приходит как
  * `{"data": [...], "pages": {...}}`, а не голым массивом. Поддерживаем оба варианта —
- * иначе «нет ни одной группы ВК» вместо трёх подключённых.
+ * иначе «нет ни одной группы» вместо трёх подключённых.
  */
 function unwrap(parsed) {
   if (parsed && !Array.isArray(parsed) && typeof parsed === 'object' && 'data' in parsed) {
@@ -116,9 +124,15 @@ export async function accounts() {
   return Array.isArray(parsed) ? parsed : [parsed].filter(Boolean);
 }
 
-/** Только группы ВК. Никогда не «первый аккаунт с chanel_id=2» — групп бывает несколько. */
-export async function vkAccounts() {
-  return (await accounts()).filter((item) => Number(item?.chanel_id) === CHANEL_VK);
+/**
+ * Только группы нужного канала. Никогда не «первый аккаунт с подходящим chanel_id» —
+ * групп в проекте бывает несколько, и рядом с ними живут аккаунты других соцсетей.
+ *
+ * @param {number} [chanelId] канал; по умолчанию Одноклассники
+ */
+export async function okAccounts(chanelId = CHANEL_OK) {
+  const wanted = Number(chanelId);
+  return (await accounts()).filter((item) => Number(item?.chanel_id) === wanted);
 }
 
 /** Шаг 1: поставить картинку в очередь загрузки. Возвращает id задачи, НЕ file_id. */
@@ -237,8 +251,8 @@ export async function createPublication({
 
 /**
  * Публикация целиком, как её видит postmypost. Нужна разделу «Опубликовано»:
- * ссылки на пост в ВК в ответе на создание нет и быть не может (в момент создания
- * записи на стене ещё не существует), а после реальной публикации адрес где-то
+ * адреса темы в ответе на создание нет и быть не может (в момент создания
+ * темы в группе ещё не существует), а после реальной публикации адрес где-то
  * в объекте появляется.
  */
 export async function publication(publicationId) {
@@ -248,14 +262,24 @@ export async function publication(publicationId) {
 }
 
 /**
- * Найти в ответе адрес поста ВКонтакте. Имя поля в справочнике не описано и у разных
- * соцсетей разное, поэтому ищем по самому адресу — он опознаётся однозначно
- * (`vk.com/wall-123_456`), а промахнуться мимо неизвестного поля так нельзя.
+ * Найти в ответе адрес опубликованной темы в Одноклассниках. Имя поля в справочнике
+ * не описано и у разных соцсетей разное, поэтому ищем по самому адресу — он опознаётся
+ * однозначно, а промахнуться мимо неизвестного поля так нельзя.
+ *
+ * Сначала ищем адрес темы (`ok.ru/group/{id}/topic/{id}`): это ровно та страница,
+ * которая индексируется Яндексом, ради неё всё и затевалось. Если такого адреса
+ * в ответе нет, берём любой ok.ru — показать хоть что-то лучше, чем ничего.
+ *
+ * Экранированный слеш (`\\/`) в шаблонах не случайность: адрес ищется в сыром JSON,
+ * а там слеши приходят экранированными.
  */
-export function vkUrlFrom(payload) {
+const OK_TOPIC_URL = /https?:\\?\/\\?\/(?:m\.)?ok\.ru\\?\/(?:group\\?\/)?[\w.-]+\\?\/topic\\?\/\d+/i;
+const OK_ANY_URL = /https?:\\?\/\\?\/(?:m\.)?ok\.ru\\?\/[^\s"',}\]]+/i;
+
+export function okUrlFrom(payload) {
   if (!payload) return null;
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  const match = text.match(/https?:\\?\/\\?\/(?:m\.)?vk\.com\/wall-?\d+_\d+/i);
+  const match = text.match(OK_TOPIC_URL) ?? text.match(OK_ANY_URL);
   if (!match) return null;
   return match[0].replaceAll('\\/', '/');
 }

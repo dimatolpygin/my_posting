@@ -1,4 +1,5 @@
 import * as groups from '../repo/groups.js';
+import * as keywords from '../repo/keywords.js';
 import * as posts from '../repo/posts.js';
 import * as runs from '../repo/runs.js';
 import * as settings from '../repo/settings.js';
@@ -6,6 +7,9 @@ import { slotTimes } from '../lib/schedule.js';
 import { log } from '../logger.js';
 
 const logger = log('план');
+
+/** Во сколько раз пул кандидатов больше ёмкости плана — запас на разнос кластеров. */
+const CANDIDATE_POOL_FACTOR = 3;
 
 /**
  * План прогона: какой материал в какую группу и на какое время.
@@ -21,6 +25,9 @@ const logger = log('план');
  * 3. **Объём задаёт группа.** Квота = `posts_per_day` минус уже опубликованное сегодня.
  * 4. **Время разносится по слотам** внутри окна постинга с джиттером: подряд идущие
  *    посты в одну минуту выглядят как бот.
+ * 5. **Кластеры тем не идут подряд.** Две соседние темы из одного кластера — это два
+ *    почти одинаковых по смыслу текста рядом в ленте группы. Для площадки это признак
+ *    штамповки, для поиска — повод счесть их дублями и оставить в выдаче одну.
  */
 
 /**
@@ -62,8 +69,13 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
   // Материалы, занятые другими планами (в том числе незаконченным прогоном), в очередь
   // не берём: иначе один материал уедет в две группы разными прогонами.
   const busy = await runs.plannedArticleIds();
-  const ready = await posts.listReadyPosts(capacity, busy);
-  const fresh = await posts.listArticlesForGeneration(capacity, [
+
+  // Кандидаты берутся с запасом, а не ровно по ёмкости плана. Иначе разнос кластеров
+  // применялся бы к списку, в котором выбора нет: выборка «от свежих к старым» вернула бы
+  // подряд идущие темы одного кластера, потому что заводились они одним прогоном.
+  const pool = capacity * CANDIDATE_POOL_FACTOR;
+  const ready = await posts.listReadyPosts(pool, busy);
+  const fresh = await posts.listArticlesForGeneration(pool, [
     ...busy,
     ...ready.map((row) => Number(row.article_id)).filter(Boolean),
   ]);
@@ -75,6 +87,8 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
       articleId: row.article_id ? Number(row.article_id) : null,
       date: row.article_date,
       label: row.title,
+      cluster: row.cluster ?? null,
+      keywordId: row.keyword_id ? Number(row.keyword_id) : null,
       needsImage: !row.image_url,
     })),
     ...fresh.map((row) => ({
@@ -83,6 +97,8 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
       articleId: Number(row.id),
       date: row.article_date,
       label: row.topic_name ?? row.title ?? row.url,
+      cluster: row.cluster ?? null,
+      keywordId: row.keyword_id ? Number(row.keyword_id) : null,
       needsImage: true,
     })),
   ].sort((a, b) => {
@@ -92,6 +108,13 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
     // сегодняшними темами и мог не опубликоваться никогда — а именно так выглядит
     // очередь после дня, когда на обложки не хватило кредитов.
     if (a.kind !== b.kind) return a.kind === 'post' ? -1 : 1;
+    // Темы из очереди ключей идут в порядке очереди, а не «от свежих к старым».
+    // Своей даты у фразы нет, `lastmod` у неё — момент взятия из очереди, и общая
+    // сортировка перевернула бы приоритет: последний взятый ключ шёл бы первым.
+    // Тот же порядок задан в выборках кандидатов, здесь он только сохраняется
+    // при слиянии двух списков.
+    if (Boolean(a.keywordId) !== Boolean(b.keywordId)) return a.keywordId ? 1 : -1;
+    if (a.keywordId && b.keywordId) return a.keywordId - b.keywordId;
     return dateValue(b.date) - dateValue(a.date);
   });
 
@@ -105,16 +128,23 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
     };
   }
 
+  // Разнос кластеров. Порядок «от свежих к старым» сохраняется настолько, насколько
+  // это позволяет правило: следующим берётся ближайший кандидат другого кластера,
+  // и только если такого не нашлось — ближайший вообще. Отсчёт продолжается с кластера
+  // последнего запланированного поста: иначе хвост одного прогона и начало следующего
+  // окажутся из одного кластера, а в ленте группы они встанут рядом.
+  const ordered = spreadClusters(candidates, await keywords.lastPlannedCluster());
+
   // Раздача по кругу: группы получают материалы по очереди, поэтому наборы не пересекаются,
   // а внутри группы порядок остаётся «от свежих к старым».
   const left = quotas.map((item) => ({ ...item, left: item.quota }));
   const assignments = [];
   let cursor = 0;
-  while (cursor < candidates.length && left.some((item) => item.left > 0)) {
+  while (cursor < ordered.length && left.some((item) => item.left > 0)) {
     let placed = false;
     for (const slot of left) {
-      if (slot.left === 0 || cursor >= candidates.length) continue;
-      assignments.push({ group: slot.group, candidate: candidates[cursor] });
+      if (slot.left === 0 || cursor >= ordered.length) continue;
+      assignments.push({ group: slot.group, candidate: ordered[cursor] });
       cursor += 1;
       slot.left -= 1;
       placed = true;
@@ -149,6 +179,7 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
     postAt: times[index],
     label: assignment.candidate.label,
     kind: assignment.candidate.kind,
+    cluster: assignment.candidate.cluster ?? null,
     date: assignment.candidate.date,
   }));
 
@@ -170,6 +201,36 @@ export async function buildPlan({ now = new Date(), groupIds, limitPerGroup, ste
       ? `Материалов меньше плана: ${items.length} из ${capacity}`
       : null,
   };
+}
+
+/**
+ * Перестановка очереди так, чтобы соседние темы были из разных кластеров.
+ *
+ * Жадный проход, а не перемешивание: порядок «от свежих к старым» остаётся значимым
+ * (за готовые посты уже заплачено), поэтому кандидат сдвигается ровно настолько,
+ * насколько нужно, чтобы разорвать соседство. Когда весь остаток очереди из одного
+ * кластера, правило перестаёт быть выполнимым — тогда берём ближайшего и идём дальше,
+ * а не бросаем прогон: пустой план хуже, чем две соседние темы одного кластера.
+ *
+ * Материалы без кластера (ручные, из прежних источников) соседству не мешают
+ * и сами разрывают цепочку: между двумя темами одного кластера они дают тот же разрыв.
+ *
+ * @param {Array<{cluster?: string|null}>} candidates очередь в исходном порядке
+ * @param {string|null} [previousCluster] кластер последнего уже запланированного поста
+ */
+export function spreadClusters(candidates, previousCluster = null) {
+  const rest = [...candidates];
+  const ordered = [];
+  let last = previousCluster ?? null;
+
+  while (rest.length > 0) {
+    let index = rest.findIndex((item) => !item.cluster || item.cluster !== last);
+    if (index === -1) index = 0;
+    const [picked] = rest.splice(index, 1);
+    ordered.push(picked);
+    last = picked.cluster ?? null;
+  }
+  return ordered;
 }
 
 function dateValue(value) {

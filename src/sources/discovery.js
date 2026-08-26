@@ -1,5 +1,6 @@
 import { discoverViaSitemap } from './sitemap.js';
 import { discoverViaWpApi } from './wp-api.js';
+import { discoverViaKeywords } from './keywords.js';
 import * as scama from './adapters/scama.js';
 import * as allComment from './adapters/all-comment.js';
 import { log } from '../logger.js';
@@ -30,6 +31,12 @@ const ADAPTERS = {
  */
 export async function discoverSource(source, { since, until = null, limit }) {
   const adapter = ADAPTERS[source.code];
+
+  // Темы из своего списка запросов. Окно дат здесь не при чём: у фразы нет даты
+  // публикации, очередь задаётся приоритетом и порядком заведения.
+  if (source.discovery === 'keywords') {
+    return discoverViaKeywords(source, { limit });
+  }
 
   if (source.discovery === 'custom' || adapter) {
     if (!adapter) {

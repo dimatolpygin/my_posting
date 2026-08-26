@@ -85,7 +85,12 @@ export async function saveCandidate(sourceId, candidate) {
     return 'listing';
   }
 
-  const topic = extractTopic(candidate);
+  // Ключ темы может прийти готовым — так делает источник по ключевым запросам.
+  // Общий разбор настроен на названия проектов и на поисковых фразах склеивает
+  // разные запросы в одну тему; там, где тема известна точно, гадать не нужно.
+  const topic = candidate.topicKey
+    ? { key: candidate.topicKey, aliases: [], name: candidate.topicName ?? candidate.title, via: 'keyword' }
+    : extractTopic(candidate);
   const keys = [topic.key, ...topic.aliases].filter(Boolean);
 
   // Без темы материал в генерацию не пойдёт: непонятно, о каком проекте пост, и дедуп
@@ -109,8 +114,8 @@ export async function saveCandidate(sourceId, candidate) {
   try {
     const { rowCount } = await query(
       `INSERT INTO articles (source_id, url, url_norm, title, lastmod, status,
-                             topic_key, topic_name, topic_aliases, topic_via)
-       VALUES ($1, $2, $3, $4, $5, 'new', $6, $7, $8::text[], $9)
+                             topic_key, topic_name, topic_aliases, topic_via, keyword_id)
+       VALUES ($1, $2, $3, $4, $5, 'new', $6, $7, $8::text[], $9, $10)
        ON CONFLICT (url_norm) DO NOTHING`,
       [
         sourceId,
@@ -122,6 +127,7 @@ export async function saveCandidate(sourceId, candidate) {
         topic.name,
         topic.aliases,
         topic.via,
+        candidate.keywordId ?? null,
       ],
     );
     return rowCount > 0 ? 'added' : 'duplicate';

@@ -2,6 +2,7 @@ import { discoverSource } from '../sources/discovery.js';
 import { fetchArticleViaWpApi } from '../sources/wp-api.js';
 import * as firecrawl from '../lib/firecrawl.js';
 import * as articles from '../repo/articles.js';
+import * as keywords from '../repo/keywords.js';
 import * as runs from '../repo/runs.js';
 import * as settings from '../repo/settings.js';
 import { query } from '../db/pool.js';
@@ -180,6 +181,19 @@ export async function checkSource(source, {
         else if (result === 'topic_duplicate') stats.topicDuplicates += 1;
         else if (result === 'listing') stats.listings += 1;
         else stats.invalid += 1;
+
+        // Ключевая фраза взята из очереди резервом и должна из него выйти в любом
+        // исходе. Материал завёлся — ключ израсходован; не завёлся — снимаем с очереди
+        // с причиной, иначе следующий прогон возьмёт его снова и упрётся в то же самое.
+        if (candidate.keywordId) {
+          if (result === 'added') {
+            await keywords.markUsed(candidate.keywordId);
+            stats.keywordsUsed = (stats.keywordsUsed ?? 0) + 1;
+          } else {
+            await keywords.markSkipped(candidate.keywordId, `материал не заведён: ${result}`);
+            stats.keywordsSkipped = (stats.keywordsSkipped ?? 0) + 1;
+          }
+        }
       }
 
       // Режим «только тема»: текст не нужен, материал сразу готов к генерации

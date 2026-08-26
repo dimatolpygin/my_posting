@@ -5,6 +5,7 @@ import { query } from '../../db/pool.js';
 import * as sources from '../../repo/sources.js';
 import * as settings from '../../repo/settings.js';
 import * as articles from '../../repo/articles.js';
+import * as keywords from '../../repo/keywords.js';
 import * as prompts from '../../repo/prompts.js';
 import * as posts from '../../repo/posts.js';
 import * as groups from '../../repo/groups.js';
@@ -30,6 +31,9 @@ const logger = log('панель');
 
 /** Виды прогонов — фильтры в разделе «Прогоны» и подписи в таблицах. */
 const KNOWN_RUN_KINDS = ['cron', 'manual', 'backfill', 'source_check', 'archive'];
+
+/** Статусы ключевой фразы — фильтр в разделе «Ключи». */
+const KEYWORD_STATUSES = ['new', 'queued', 'used', 'skipped'];
 
 export function panelRouter() {
   const router = Router();
@@ -118,6 +122,209 @@ export function panelRouter() {
   });
 
   // ── Источники ────────────────────────────────────────────────────────────
+  // ── Ключевые запросы ─────────────────────────────────────────────────────
+  router.get('/keywords', async (req, res, next) => {
+    try {
+      const status = KEYWORD_STATUSES.includes(req.query.status) ? req.query.status : null;
+      const cluster = req.query.cluster?.trim() || null;
+      const [counts, clusters, list] = await Promise.all([
+        keywords.counts(),
+        keywords.byCluster(),
+        keywords.list({ status, cluster, limit: 300 }),
+      ]);
+
+      const clusterOptions = clusters
+        .map((row) => `<option value="${esc(row.cluster)}"${row.cluster === cluster ? ' selected' : ''}>
+             ${esc(row.cluster)} (${row.new} из ${row.total})</option>`)
+        .join('');
+
+      const rows = list.length
+        ? list
+            .map(
+              (item) => `<tr>
+                <td><strong>${esc(item.phrase)}</strong>${
+                  item.angle ? `<br><span class="hint">${esc(item.angle)}</span>` : ''
+                }</td>
+                <td class="hint">${esc(item.cluster ?? '—')}</td>
+                <td>${keywordStatusTag(item)}</td>
+                <td>${
+                  item.post_id
+                    ? `<a href="/posts/${item.post_id}">пост #${item.post_id}</a>
+                       <span class="hint">${esc(item.post_status ?? '')}</span>`
+                    : item.article_id
+                      ? '<span class="hint">материал заведён</span>'
+                      : '<span class="hint">—</span>'
+                }</td>
+                <td class="hint">${esc(formatDate(item.used_at) || '')}</td>
+                <td style="white-space:nowrap">${
+                  ['new', 'skipped'].includes(item.status)
+                    ? `<form class="inline" method="post" action="/keywords/${item.id}/status">
+                         <input type="hidden" name="status" value="${
+                           item.status === 'new' ? 'skipped' : 'new'
+                         }">
+                         <button class="ghost small" type="submit">${
+                           item.status === 'new' ? 'Снять' : 'Вернуть'
+                         }</button>
+                       </form>`
+                    : ''
+                }</td>
+              </tr>`,
+            )
+            .join('\n')
+        : '<tr><td colspan="6" class="empty">Под этот фильтр ничего не подошло.</td></tr>';
+
+      const clusterRows = clusters
+        .map(
+          (row) => `<tr>
+            <td><a href="/keywords?cluster=${encodeURIComponent(row.cluster)}">${esc(row.cluster)}</a></td>
+            <td>${row.total}</td><td>${row.new}</td><td>${row.used}</td>
+          </tr>`,
+        )
+        .join('\n');
+
+      const body = `
+        <div class="card">
+          <div class="grid">
+            ${stat(counts.total, 'всего фраз')}
+            ${stat(counts.new, 'в очереди')}
+            ${stat(counts.used, 'стали темами')}
+            ${stat(counts.skipped, 'сняты')}
+            ${stat(counts.clusters, 'кластеров')}
+          </div>
+          <form method="post" action="/keywords/run" style="margin-top:14px">
+            <button type="submit">Взять темы из очереди</button>
+            <span class="hint">Столько фраз, сколько задано настройкой
+              «максимум материалов за одну проверку источника».</span>
+          </form>
+        </div>
+
+        <h2>Добавить фразу</h2>
+        <div class="card">
+          <form method="post" action="/keywords">
+            <div class="grid">
+              <div><label>Фраза (она же заголовок темы)</label>
+                <input type="text" name="phrase" required placeholder="Сколько стоит бот для Авито"></div>
+              <div><label>Кластер</label>
+                <input type="text" name="cluster" list="clusters" placeholder="Цены и деньги"></div>
+              <div><label>Угол подачи</label>
+                <input type="text" name="angle" placeholder="разработка плюс обязательные подписки"></div>
+              <div><label>Приоритет</label>
+                <input type="number" name="priority" value="0" min="0" max="100"></div>
+            </div>
+            <datalist id="clusters">${clusters
+              .map((row) => `<option value="${esc(row.cluster)}">`)
+              .join('')}</datalist>
+            <button type="submit" style="margin-top:12px">Добавить</button>
+          </form>
+          <p class="hint" style="margin:10px 0 0">
+            Фраза станет первой строкой поста, а значит заголовком страницы темы в поиске.
+            Держите её короткой: к заголовку площадка приклеивает название группы, и длинную
+            фразу в сниппете обрежет собственный хвост. Угол подачи разводит похожие фразы,
+            чтобы по ним не получилось два одинаковых текста.
+          </p>
+        </div>
+
+        <h2>Кластеры</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Кластер</th><th>Всего</th><th>В очереди</th><th>Стали темами</th></tr></thead>
+            <tbody>${clusterRows || '<tr><td colspan="4" class="empty">Кластеров нет.</td></tr>'}</tbody>
+          </table>
+          <p class="hint" style="margin:10px 0 0">
+            Планировщик не ставит подряд две темы одного кластера: рядом в ленте они
+            выглядят штамповкой, а в поиске рискуют склеиться в дубль.
+          </p>
+        </div>
+
+        <h2>Фразы</h2>
+        <div class="card">
+          <form method="get" action="/keywords" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap">
+            <select name="status">
+              <option value="">все статусы</option>
+              ${KEYWORD_STATUSES.map(
+                (value) => `<option value="${value}"${value === status ? ' selected' : ''}>${
+                  keywordStatusText(value)
+                }</option>`,
+              ).join('')}
+            </select>
+            <select name="cluster"><option value="">все кластеры</option>${clusterOptions}</select>
+            <button class="ghost" type="submit">Показать</button>
+          </form>
+          <table>
+            <thead><tr>
+              <th>Фраза и угол</th><th>Кластер</th><th>Статус</th><th>Результат</th>
+              <th>Взят</th><th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+
+      res.type('html').send(
+        page({
+          title: 'Ключи',
+          active: '/keywords',
+          user: req.user,
+          heading: 'Ключевые запросы',
+          sub: 'Вход конвейера: одна фраза — одна тема в группе. Порядок задают приоритет и кластер.',
+          message: buildSourceMessage(req.query),
+          body,
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Взять очередную порцию фраз и завести по ним материалы
+  router.post('/keywords/run', async (req, res) => {
+    try {
+      const { rows } = await query(`SELECT * FROM sources WHERE discovery = 'keywords' ORDER BY id LIMIT 1`);
+      const source = rows[0];
+      if (!source) throw new Error('Источник с режимом «ключевые запросы» не найден — примените миграции');
+
+      const result = await checkSource(source);
+      const summary = result.added
+        ? `Заведено тем: ${result.added}` +
+          (result.keywordsSkipped ? `, ключей снято ${result.keywordsSkipped}` : '') +
+          `, ${Math.round(result.ms / 1000)} c`
+        : 'Свободных ключевых запросов не осталось — добавьте фразы или верните снятые в очередь';
+      logger.info({ ...result, кто: req.user.login }, 'Темы взяты из очереди ключей');
+      res.redirect(`/keywords?ok=${encodeURIComponent(summary)}`);
+    } catch (error) {
+      logger.error(errFields(error), 'Взятие тем из очереди ключей упало');
+      res.redirect(`/keywords?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  router.post('/keywords', async (req, res) => {
+    try {
+      const { keyword, duplicate } = await keywords.add({
+        phrase: req.body.phrase,
+        cluster: req.body.cluster,
+        angle: req.body.angle,
+        priority: Number.parseInt(req.body.priority, 10) || 0,
+      });
+      if (duplicate) {
+        return res.redirect(`/keywords?err=${encodeURIComponent('Такая фраза уже есть в списке')}`);
+      }
+      logger.info({ ключ: keyword.id, фраза: keyword.phrase, кто: req.user.login }, 'Ключ добавлен');
+      return res.redirect(`/keywords?ok=${encodeURIComponent(`Фраза добавлена: ${keyword.phrase}`)}`);
+    } catch (error) {
+      return res.redirect(`/keywords?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  router.post('/keywords/:id/status', async (req, res) => {
+    try {
+      const id = Number.parseInt(req.params.id, 10);
+      await keywords.setStatus(id, req.body.status);
+      logger.info({ ключ: id, статус: req.body.status, кто: req.user.login }, 'Статус ключа изменён');
+      res.redirect('/keywords?ok=1');
+    } catch (error) {
+      res.redirect(`/keywords?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
   router.get('/sources', async (req, res, next) => {
     try {
       const list = await sources.listAll();
@@ -2440,8 +2647,23 @@ function publishModeTag(mode) {
     : '<span class="tag soon">черновики</span>';
 }
 
+function keywordStatusText(status) {
+  return { new: 'в очереди', queued: 'зарезервирован', used: 'стал темой', skipped: 'снят' }[status]
+    ?? status;
+}
+
+function keywordStatusTag(item) {
+  const text = keywordStatusText(item.status);
+  const cls = { new: 'on', queued: 'soon', used: 'off', skipped: 'off' }[item.status] ?? 'off';
+  const reason = item.status === 'skipped' && item.skip_reason
+    ? ` <span class="hint">${esc(item.skip_reason)}</span>`
+    : '';
+  return `<span class="tag ${cls}">${text}</span>${reason}`;
+}
+
 function discoveryText(item) {
   if (item.discovery === 'sitemap') return `sitemap: ${item.sitemap_pattern}`;
+  if (item.discovery === 'keywords') return 'очередь ключевых запросов';
   return 'свой адаптер';
 }
 

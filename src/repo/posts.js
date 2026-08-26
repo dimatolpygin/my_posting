@@ -236,16 +236,26 @@ export async function listReadyPosts(limit, excludeArticleIds = []) {
   const { rows } = await query(
     `SELECT p.id, p.title, p.article_id, p.image_url, p.topic_key,
             COALESCE(a.published_at, a.lastmod) AS article_date,
-            a.topic_name, s.code AS source_code
+            a.topic_name, s.code AS source_code, k.cluster, a.keyword_id
        FROM posts p
        LEFT JOIN articles a ON a.id = p.article_id
        LEFT JOIN sources s ON s.id = a.source_id
+       LEFT JOIN keywords k ON k.id = a.keyword_id
       WHERE p.status = 'ready'
         AND NOT EXISTS (SELECT 1 FROM publications pub
                          WHERE pub.post_id = p.id AND pub.error IS NULL
                            AND pub.pmp_publication_id IS NOT NULL)
         AND (p.article_id IS NULL OR NOT (p.article_id = ANY($2::bigint[])))
-      ORDER BY COALESCE(a.published_at, a.lastmod) DESC NULLS LAST, p.id ASC
+      -- Обычные материалы идут «от свежих к старым», как и раньше. Темы из очереди
+      -- ключей — следом и в порядке очереди: у фразы нет своей даты, «lastmod» у неё
+      -- это момент взятия из очереди, и общая сортировка ставила бы последнюю взятую
+      -- порцию впереди первой. Приоритетные ключи тогда не дожидались бы своего слота
+      -- никогда, пока очередь пополняется быстрее, чем расходуется.
+      ORDER BY (a.keyword_id IS NOT NULL),
+               CASE WHEN a.keyword_id IS NULL
+                    THEN COALESCE(a.published_at, a.lastmod) END DESC NULLS LAST,
+               a.keyword_id ASC,
+               p.id ASC
       LIMIT $1`,
     [limit, excludeArticleIds],
   );
@@ -258,15 +268,25 @@ export async function listArticlesForGeneration(limit, excludeArticleIds = []) {
     `SELECT a.id, a.url, a.title, a.content, a.topic_key, a.topic_name,
             COALESCE(a.published_at, a.lastmod) AS published_at,
             COALESCE(a.published_at, a.lastmod) AS article_date,
-            s.code AS source_code, s.content_mode
+            s.code AS source_code, s.content_mode, k.cluster, a.keyword_id
        FROM articles a
        JOIN sources s ON s.id = a.source_id
+       LEFT JOIN keywords k ON k.id = a.keyword_id
       WHERE a.status IN ('new', 'fetched')
         AND a.topic_key IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.topic_key = a.topic_key AND p.status <> 'failed')
         AND (s.content_mode = 'topic_only' OR a.content IS NOT NULL)
         AND NOT (a.id = ANY($2::bigint[]))
-      ORDER BY COALESCE(a.published_at, a.lastmod) DESC NULLS LAST, a.id DESC
+      -- Обычные материалы идут «от свежих к старым», как и раньше. Темы из очереди
+      -- ключей — следом и в порядке очереди: у фразы нет своей даты, «lastmod» у неё
+      -- это момент взятия из очереди, и общая сортировка ставила бы последнюю взятую
+      -- порцию впереди первой. Приоритетные ключи тогда не дожидались бы своего слота
+      -- никогда, пока очередь пополняется быстрее, чем расходуется.
+      ORDER BY (a.keyword_id IS NOT NULL),
+               CASE WHEN a.keyword_id IS NULL
+                    THEN COALESCE(a.published_at, a.lastmod) END DESC NULLS LAST,
+               a.keyword_id ASC,
+               a.id DESC
       LIMIT $1`,
     [limit, excludeArticleIds],
   );

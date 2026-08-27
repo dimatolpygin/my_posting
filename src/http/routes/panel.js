@@ -6,6 +6,7 @@ import * as sources from '../../repo/sources.js';
 import * as settings from '../../repo/settings.js';
 import * as articles from '../../repo/articles.js';
 import * as keywords from '../../repo/keywords.js';
+import * as facts from '../../repo/facts.js';
 import * as prompts from '../../repo/prompts.js';
 import * as posts from '../../repo/posts.js';
 import * as groups from '../../repo/groups.js';
@@ -322,6 +323,239 @@ export function panelRouter() {
       res.redirect('/keywords?ok=1');
     } catch (error) {
       res.redirect(`/keywords?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  // ── Факт-база ────────────────────────────────────────────────────────────
+  router.get('/facts', async (req, res, next) => {
+    try {
+      const kind = facts.KINDS.includes(req.query.kind) ? req.query.kind : null;
+      const cluster = req.query.cluster?.trim() || null;
+      const [counts, kinds, clusterRows, list] = await Promise.all([
+        facts.counts(),
+        facts.byKind(),
+        facts.clusters(),
+        facts.list({ kind, cluster, limit: 400 }),
+      ]);
+
+      const clusterInputs = clusterRows
+        .map((row) => `<option value="${esc(row.cluster)}">`)
+        .join('');
+
+      const kindOptions = (selected) =>
+        facts.KINDS.map(
+          (value) => `<option value="${value}"${value === selected ? ' selected' : ''}>${
+            esc(facts.kindText(value))
+          }</option>`,
+        ).join('');
+
+      const kindRows = kinds
+        .map(
+          (row) => `<tr>
+            <td><a href="/facts?kind=${row.kind}">${esc(facts.kindText(row.kind))}</a></td>
+            <td>${row.total}</td><td>${row.active}</td><td>${row.used}</td>
+          </tr>`,
+        )
+        .join('\n');
+
+      const cards = list.length
+        ? list
+            .map(
+              (item) => `<details class="card" style="margin-bottom:10px"${
+                item.is_active ? '' : ' data-off="1"'
+              }>
+              <summary>
+                <span class="tag ${item.is_active ? 'on' : 'off'}">${esc(facts.kindText(item.kind))}</span>
+                <strong>${esc(item.title)}</strong>
+                <span class="hint">${esc(item.clusters.join(', ') || 'без кластера')}${
+                  item.niche ? ` · ${esc(item.niche)}` : ''
+                } · использований ${item.used_count}${
+                  item.last_used_at ? ` · последнее ${esc(formatDate(item.last_used_at))}` : ''
+                }${item.is_active ? '' : ' · выключена'}</span>
+              </summary>
+              <form method="post" action="/facts/${item.id}" style="margin-top:12px">
+                <div class="grid">
+                  <div><label>Тип</label>
+                    <select name="kind">${kindOptions(item.kind)}</select></div>
+                  <div><label>Метка</label>
+                    <input type="text" name="title" required value="${esc(item.title)}"></div>
+                  <div><label>Ниша</label>
+                    <input type="text" name="niche" value="${esc(item.niche ?? '')}"></div>
+                  <div><label>Канал</label>
+                    <input type="text" name="channel" value="${esc(item.channel ?? '')}"></div>
+                </div>
+                <label style="margin-top:10px;display:block">Кластеры через запятую</label>
+                <input type="text" name="clusters" list="fact-clusters" value="${esc(item.clusters.join(', '))}">
+                <label style="margin-top:10px;display:block">Текст факта</label>
+                <textarea name="body" rows="6" required>${esc(item.body)}</textarea>
+                <button type="submit" style="margin-top:12px">Сохранить</button>
+              </form>
+              <form method="post" action="/facts/${item.id}/active" style="margin-top:8px">
+                <input type="hidden" name="active" value="${item.is_active ? '0' : '1'}">
+                <button class="ghost small" type="submit">${
+                  item.is_active ? 'Выключить' : 'Включить'
+                }</button>
+                <span class="hint">Выключенная карточка остаётся в базе, но в посты не идёт.</span>
+              </form>
+            </details>`,
+            )
+            .join('\n')
+        : '<div class="card empty">Под этот фильтр ничего не подошло.</div>';
+
+      const body = `
+        <div class="card">
+          <div class="grid">
+            ${stat(counts.total, 'карточек')}
+            ${stat(counts.active, 'в работе')}
+            ${stat(counts.off, 'выключено')}
+            ${stat(counts.kinds, 'типов')}
+            ${stat(counts.used_total, 'использований')}
+          </div>
+          <form method="post" action="/facts/check" style="margin-top:14px">
+            <button type="submit">Проверить обезличивание</button>
+            <span class="hint">Прогоняет все карточки правилами из
+              <code>src/lib/anonymize.js</code>: ссылки, собаки, телефоны, названия
+              заказчиков и латиница вне короткого списка разрешённых сокращений.</span>
+          </form>
+        </div>
+
+        <h2>Типы карточек</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Тип</th><th>Всего</th><th>В работе</th><th>Использований</th></tr></thead>
+            <tbody>${kindRows || '<tr><td colspan="4" class="empty">Карточек нет.</td></tr>'}</tbody>
+          </table>
+          <p class="hint" style="margin:10px 0 0">
+            Пост собирается из карточек разных типов: задача задаёт узнаваемую боль,
+            грабли показывают опыт, деньги снимают главный вопрос, возражение
+            отвечает на второй, цитата подтверждает. Перекос в один тип означает,
+            что тексты начнут повторяться.
+          </p>
+        </div>
+
+        <h2>Новая карточка</h2>
+        <div class="card">
+          <form method="post" action="/facts">
+            <div class="grid">
+              <div><label>Тип</label><select name="kind">${kindOptions('task')}</select></div>
+              <div><label>Метка</label>
+                <input type="text" name="title" required placeholder="Смета по проекту в файле"></div>
+              <div><label>Ниша</label>
+                <input type="text" name="niche" placeholder="стройка и ремонт"></div>
+              <div><label>Канал</label>
+                <input type="text" name="channel" placeholder="телеграм"></div>
+            </div>
+            <label style="margin-top:10px;display:block">Кластеры через запятую</label>
+            <input type="text" name="clusters" list="fact-clusters" placeholder="Расчёты и сметы, Цены и деньги">
+            <label style="margin-top:10px;display:block">Текст факта</label>
+            <textarea name="body" rows="5" required
+              placeholder="Как этот факт можно вплести в пост: живым языком, без ников и ссылок"></textarea>
+            <button type="submit" style="margin-top:12px">Добавить</button>
+          </form>
+          <p class="hint" style="margin:10px 0 0">
+            Ни ников, ни названий компаний, ни адресов, ни ссылок: карточку
+            с ними репозиторий не сохранит. «Компания, которая пригоняет авто под
+            заказ» вместо конкретного названия — этого достаточно, чтобы факт
+            остался узнаваемым, а заказчик неузнанным.
+          </p>
+        </div>
+
+        <h2>Карточки</h2>
+        <div class="card">
+          <form method="get" action="/facts" style="display:flex;gap:8px;flex-wrap:wrap">
+            <select name="kind">
+              <option value="">все типы</option>
+              ${facts.KINDS.map(
+                (value) => `<option value="${value}"${value === kind ? ' selected' : ''}>${
+                  esc(facts.kindText(value))
+                }</option>`,
+              ).join('')}
+            </select>
+            <select name="cluster">
+              <option value="">все кластеры</option>
+              ${clusterRows
+                .map(
+                  (row) => `<option value="${esc(row.cluster)}"${
+                    row.cluster === cluster ? ' selected' : ''
+                  }>${esc(row.cluster)} (${row.total})</option>`,
+                )
+                .join('')}
+            </select>
+            <button class="ghost" type="submit">Показать</button>
+          </form>
+        </div>
+        <datalist id="fact-clusters">${clusterInputs}</datalist>
+        ${cards}`;
+
+      res.type('html').send(
+        page({
+          title: 'Факты',
+          active: '/facts',
+          user: req.user,
+          heading: 'Факт-база',
+          sub: 'Начинка постов: задачи, грабли, деньги, возражения и цитаты. Добыто один раз, дальше рекомбинируется.',
+          message: buildSourceMessage(req.query),
+          body,
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/facts', async (req, res) => {
+    try {
+      const fact = await facts.add(req.body);
+      logger.info({ карточка: fact.id, тип: fact.kind, кто: req.user.login }, 'Карточка факта заведена');
+      res.redirect(`/facts?ok=${encodeURIComponent(`Карточка добавлена: ${fact.title}`)}`);
+    } catch (error) {
+      res.redirect(`/facts?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  router.post('/facts/check', async (req, res) => {
+    try {
+      const { checked, dirty } = await facts.checkAnonymity();
+      if (dirty.length === 0) {
+        logger.info({ проверено: checked, кто: req.user.login }, 'Обезличивание: чисто');
+        return res.redirect(
+          `/facts?ok=${encodeURIComponent(`Проверено карточек: ${checked}. Нарушений нет.`)}`,
+        );
+      }
+      const summary = dirty
+        .slice(0, 5)
+        .map((row) => `#${row.id} ${row.text}`)
+        .join(' | ');
+      logger.warn({ проверено: checked, грязных: dirty.length }, 'Обезличивание: есть нарушения');
+      return res.redirect(
+        `/facts?err=${encodeURIComponent(`Нарушений в ${dirty.length} карточках: ${summary}`)}`,
+      );
+    } catch (error) {
+      return res.redirect(`/facts?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  router.post('/facts/:id', async (req, res) => {
+    try {
+      const id = Number.parseInt(req.params.id, 10);
+      const fact = await facts.update(id, req.body);
+      logger.info({ карточка: id, кто: req.user.login }, 'Карточка факта поправлена');
+      res.redirect(`/facts?ok=${encodeURIComponent(`Карточка сохранена: ${fact.title}`)}`);
+    } catch (error) {
+      res.redirect(`/facts?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
+  router.post('/facts/:id/active', async (req, res) => {
+    try {
+      const id = Number.parseInt(req.params.id, 10);
+      const fact = await facts.setActive(id, req.body.active === '1');
+      logger.info({ карточка: id, включена: fact.is_active, кто: req.user.login }, 'Карточка переключена');
+      res.redirect(`/facts?ok=${encodeURIComponent(
+        `${fact.is_active ? 'Включена' : 'Выключена'}: ${fact.title}`,
+      )}`);
+    } catch (error) {
+      res.redirect(`/facts?err=${encodeURIComponent(error.message)}`);
     }
   });
 

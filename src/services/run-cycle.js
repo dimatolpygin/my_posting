@@ -141,6 +141,16 @@ async function executeCycle({ kind, groupIds, limitPerGroup, stepMinutes }) {
       `Найден незаконченный прогон #${run.id} — продолжаем его, новый план не строим`,
     );
   } else {
+    // Материалы, чей пост удалили, возвращаются в очередь: иначе тема пропадёт молча,
+    // а вместе с ней и потраченный на неё ключ.
+    const released = await posts.releaseOrphanArticles();
+    if (released > 0) {
+      logger.warn(
+        { вернули: released },
+        `Материалов без поста вернули в очередь: ${released}`,
+      );
+    }
+
     // Свежее с сайтов забираем до плана. Иначе прогон публикует накопленное в базе,
     // а вышедшее сегодня попадёт в очередь только тогда, когда запас кончится.
     refreshed = await refreshSources();

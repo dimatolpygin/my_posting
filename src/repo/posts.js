@@ -424,13 +424,26 @@ export async function listArchiveCandidates({
     .slice(0, limit);
 }
 
+/**
+ * Материал по номеру — так его берёт прогон по слоту плана.
+ *
+ * Поля ключа (`keyword_phrase`, `cluster`, `angle`) здесь так же обязательны, как
+ * в выборке очереди: по ним генерация ставит заголовок, выбирает начинку и решает,
+ * идти ли за материалом в интернет. Без них автоматический прогон писал бы пост
+ * «по названию темы» и лез бы во firecrawl за фразой, которой нет ни на одном сайте, —
+ * а ручная генерация из панели при этом работала бы правильно, потому что берёт
+ * материал соседней выборкой. Расхождение двух запросов на один и тот же материал
+ * стоит держать в голове: они должны отдавать одинаковый набор полей.
+ */
 export async function findArticleForGeneration(articleId) {
   const { rows } = await query(
     `SELECT a.id, a.url, a.title, a.content, a.topic_key, a.topic_name,
             COALESCE(a.published_at, a.lastmod) AS published_at,
-            s.code AS source_code, s.content_mode
+            s.code AS source_code, s.content_mode,
+            a.keyword_id, k.phrase AS keyword_phrase, k.cluster, k.angle
        FROM articles a
        JOIN sources s ON s.id = a.source_id
+       LEFT JOIN keywords k ON k.id = a.keyword_id
       WHERE a.id = $1`,
     [articleId],
   );
@@ -439,6 +452,27 @@ export async function findArticleForGeneration(articleId) {
 
 export async function markArticleQueued(articleId) {
   await query(`UPDATE articles SET status = 'queued' WHERE id = $1`, [articleId]);
+}
+
+/**
+ * Вернуть в очередь материалы, чей пост исчез.
+ *
+ * `queued` у материала означает «по нему уже написан пост». Если пост потом удалили
+ * (руками из панели или разбором неудачного прогона), материал остаётся в этом статусе
+ * навсегда: в выборку генерации попадают только `new` и `fetched`. Для темы из очереди
+ * ключей это значит, что ключ израсходован, а поста по нему нет и не будет — тема
+ * пропала молча. Проверка дешёвая, поэтому делается перед каждым прогоном.
+ *
+ * @returns {Promise<number>} сколько материалов вернулось в очередь
+ */
+export async function releaseOrphanArticles() {
+  const { rowCount } = await query(
+    `UPDATE articles a
+        SET status = 'fetched'
+      WHERE a.status = 'queued'
+        AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.article_id = a.id)`,
+  );
+  return rowCount;
 }
 
 export async function countAll() {

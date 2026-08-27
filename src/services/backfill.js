@@ -60,6 +60,41 @@ export async function backfillArticles(deficit, { maxSources = 5 } = {}) {
   let checked = 0;
   let usedDays = null;
 
+  // Очередь ключевых запросов вглубь не читается: у фразы нет даты, окно её не касается,
+  // и повторный заход просто возьмёт из очереди следующую порцию. Если бы такой источник
+  // шёл общим циклом, одна нехватка в пару постов выгребла бы очередь на три захода —
+  // а материалы из неё потом лежали бы в базе месяцами. Поэтому очередь опрашивается
+  // ровно один раз, и только потом, если всё равно не хватило, идём в архив сайтов.
+  const [queues, archives] = sources.reduce(
+    (acc, source) => {
+      acc[source.discovery === 'keywords' ? 0 : 1].push(source);
+      return acc;
+    },
+    [[], []],
+  );
+
+  for (const source of queues) {
+    try {
+      const stats = await checkSource(source, { kind: 'backfill' });
+      checked += 1;
+      added += stats.added;
+    } catch (error) {
+      logger.warn(
+        { источник: source.code, ...errFields(error) },
+        `Добор из очереди ${source.code} не удался: ${error.message}`,
+      );
+    }
+    if (added >= deficit) break;
+  }
+
+  if (added >= deficit || archives.length === 0) {
+    logger.info(
+      { добавлено: added, источников: checked },
+      `Добор завершён очередью ключей: новых материалов ${added} (нужно было ${deficit})`,
+    );
+    return { added, checked, days: null };
+  }
+
   // Шагаем вглубь архива, а не сразу на два года: чем меньше окно, тем свежее материалы
   // и тем дешевле обход (у firecrawl лимит 1000 запросов в месяц).
   for (const multiplier of [2, 4, 8]) {
@@ -68,11 +103,11 @@ export async function backfillArticles(deficit, { maxSources = 5 } = {}) {
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     logger.info(
-      { нехватка: deficit, глубина_дней: days, источников: Math.min(sources.length, maxSources) },
+      { нехватка: deficit, глубина_дней: days, источников: Math.min(archives.length, maxSources) },
       `Добор старых тем: не хватает ${deficit}, читаем источники за ${days} дней`,
     );
 
-    for (const source of sources.slice(0, maxSources)) {
+    for (const source of archives.slice(0, maxSources)) {
       try {
         const stats = await checkSource(source, { kind: 'backfill', since });
         checked += 1;

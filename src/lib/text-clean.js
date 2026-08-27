@@ -250,14 +250,22 @@ export function validateModelText(text) {
   const problems = [];
   const value = String(text ?? '');
 
-  if (/(https?:\/\/|www\.|[a-zа-я0-9-]+\.(ru|com|net|org|io|ai)\b)/i.test(value)) {
-    problems.push('в тексте есть ссылка или адрес сайта, а их подставляет система');
+  // Найденный кусок называем дословно. На «в тексте есть номер телефона» модель
+  // перебирает варианты вслепую и три попытки подряд возвращает тот же номер
+  // (поймано на живом прогоне), а на «убери 8 900 123 45 67» убирает сразу.
+  const firstMatch = (re) => value.match(re)?.[0]?.trim();
+
+  const link = firstMatch(/(https?:\/\/\S+|www\.\S+|[a-zа-я0-9-]+\.(ru|com|net|org|io|ai)\b)/i);
+  if (link) {
+    problems.push(`убери из текста адрес «${link}»: ссылку в конец подставляет система`);
   }
-  if (/@[a-zа-я0-9_]/i.test(value)) {
-    problems.push('в тексте есть собака: ни почт, ни ников писать не нужно');
+  const at = firstMatch(/\S*@[a-zа-я0-9_.-]+/i);
+  if (at) {
+    problems.push(`убери из текста «${at}»: ни почт, ни ников писать не нужно`);
   }
-  if (/(\+7|\b8)[\s(-]?\d{3}[\s)-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/.test(value)) {
-    problems.push('в тексте есть номер телефона');
+  const phone = firstMatch(/(\+7|\b8)[\s(-]?\d{3}[\s)-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/);
+  if (phone) {
+    problems.push(`убери номер телефона «${phone}» вместе с фразой, где он стоит`);
   }
 
   const lower = value.toLowerCase();

@@ -156,3 +156,84 @@ export async function checkAnonymity() {
   }
   return { checked: rows.length, dirty };
 }
+
+/**
+ * Карточки, уже использованные в последних N постах.
+ *
+ * Нужны сборщику как чёрный список. Правило «одна карточка не попадает в два поста
+ * подряд» — это N = 1; настройка поднимает его выше, и тогда факт возвращается
+ * в оборот не раньше, чем через N тем. Без такого окна счётчик использований
+ * выравнивает базу слишком медленно: подряд идущие темы одного кластера тянут
+ * одни и те же карточки, потому что на момент выбора у всех них счётчик ещё нулевой.
+ */
+export async function usedInLastPosts(posts = 1) {
+  if (!posts || posts < 1) return [];
+  const { rows } = await query(
+    `SELECT DISTINCT pf.fact_id
+       FROM post_facts pf
+      WHERE pf.post_id IN (
+        SELECT id FROM posts WHERE status <> 'failed' ORDER BY id DESC LIMIT $1
+      )`,
+    [posts],
+  );
+  return rows.map((row) => row.fact_id);
+}
+
+/**
+ * Карточки-кандидаты для поста.
+ *
+ * Порядок выбора: сначала те, что использовались реже всех, среди равных — те, что
+ * дольше не появлялись, дальше случайно. Так база расходуется равномерно, а не
+ * первыми двадцатью карточками по алфавиту.
+ *
+ * @param {object} options
+ * @param {string} [options.cluster] кластер темы; null — берём из всей базы
+ * @param {number[]} [options.excludeIds] карточки, занятые недавними постами
+ */
+export async function candidates({ cluster = null, excludeIds = [] } = {}) {
+  const { rows } = await query(
+    `SELECT * FROM facts
+      WHERE is_active
+        AND ($1::text IS NULL OR $1 = ANY (clusters))
+        AND NOT (id = ANY ($2::int[]))
+      ORDER BY used_count ASC, last_used_at ASC NULLS FIRST, random()`,
+    [cluster, excludeIds],
+  );
+  return rows;
+}
+
+/**
+ * Отметить карточки использованными в посте.
+ *
+ * Связка `post_facts` и счётчик обновляются вместе: счётчик нужен для быстрого
+ * выбора, связка — чтобы в панели было видно, из чего собран конкретный пост,
+ * и чтобы правило «не два поста подряд» имело на что опереться.
+ */
+export async function markUsed(postId, factIds) {
+  const ids = (factIds ?? []).map(Number).filter(Boolean);
+  if (ids.length === 0) return 0;
+  await query(
+    `INSERT INTO post_facts (post_id, fact_id)
+     SELECT $1, unnest($2::int[])
+     ON CONFLICT DO NOTHING`,
+    [postId, ids],
+  );
+  const { rowCount } = await query(
+    `UPDATE facts SET used_count = used_count + 1, last_used_at = now() WHERE id = ANY ($1::int[])`,
+    [ids],
+  );
+  return rowCount;
+}
+
+/** Из каких карточек собран пост — для карточки поста в панели. */
+export async function forPost(postId) {
+  const { rows } = await query(
+    `SELECT f.id, f.kind, f.title
+       FROM post_facts pf
+       JOIN facts f ON f.id = pf.fact_id
+      WHERE pf.post_id = $1
+      ORDER BY f.kind, f.id`,
+    [postId],
+  );
+  return rows;
+}

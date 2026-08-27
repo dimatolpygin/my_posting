@@ -6,8 +6,8 @@ export async function create(row) {
   const { rows } = await query(
     `INSERT INTO posts (article_id, title, body, char_count, model, provider, prompt_version,
                         tokens_in, tokens_out, cost_usd, latency_ms, attempts, topic_key,
-                        request_id, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'ready')
+                        request_id, shingles, similarity, similar_to, tail_kind, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::text[], $16, $17, $18, 'ready')
      RETURNING *`,
     [
       row.articleId ?? null,
@@ -24,9 +24,57 @@ export async function create(row) {
       row.attempts ?? 1,
       row.topicKey ?? null,
       row.requestId ?? null,
+      row.shingles ?? null,
+      row.similarity ?? null,
+      row.similarTo ?? null,
+      row.tailKind ?? null,
     ],
   );
   return rows[0];
+}
+
+/**
+ * Подстановка настоящих ссылок вместо плейсхолдеров — отдельным запросом после вставки.
+ *
+ * Порядок именно такой и другим быть не может: на этапе 6 ссылка станет персональной
+ * (`/k/{post_id}`), а id появляется только после вставки. Опубликованную тему задним
+ * числом не отредактировать, поэтому подстановка обязана произойти до публикации,
+ * но после сохранения.
+ */
+export async function replaceBody(postId, body) {
+  const { rows } = await query(
+    'UPDATE posts SET body = $2, char_count = length($2) WHERE id = $1 RETURNING *',
+    [postId, body],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Отпечатки последних постов — для проверки, не написали ли мы это уже.
+ *
+ * Сравниваем с последними N, а не со всей историей: при десяти темах в день за год
+ * накопится под четыре тысячи постов, и полное сравнение начнёт стоить заметного
+ * времени на каждой генерации. Дубль опасен, когда две похожие темы стоят рядом
+ * в выдаче и в группе, а от текста годичной давности новый уже расходится сам.
+ */
+export async function recentShingles(limit = 200, excludePostId = null) {
+  const { rows } = await query(
+    `SELECT id, title, shingles
+       FROM posts
+      WHERE status <> 'failed'
+        AND shingles IS NOT NULL
+        AND ($2::bigint IS NULL OR id <> $2)
+      ORDER BY id DESC
+      LIMIT $1`,
+    [limit, excludePostId],
+  );
+  return rows;
+}
+
+/** Сколько постов уже сделано — по этому номеру решается, ставить ли рекламный блок. */
+export async function countMade() {
+  const { rows } = await query("SELECT count(*)::int AS total FROM posts WHERE status <> 'failed'");
+  return rows[0].total;
 }
 
 export async function createFailed(row) {
@@ -185,9 +233,11 @@ export async function nextArticleForGeneration(sourceId = null) {
   const { rows } = await query(
     `SELECT a.id, a.url, a.title, a.content, a.topic_key, a.topic_name,
             COALESCE(a.published_at, a.lastmod) AS published_at,
-            s.code AS source_code, s.content_mode
+            s.code AS source_code, s.content_mode,
+            a.keyword_id, k.phrase AS keyword_phrase, k.cluster, k.angle
        FROM articles a
        JOIN sources s ON s.id = a.source_id
+       LEFT JOIN keywords k ON k.id = a.keyword_id
       WHERE a.status IN ('new', 'fetched')
         AND a.topic_key IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.topic_key = a.topic_key AND p.status <> 'failed')
@@ -268,7 +318,8 @@ export async function listArticlesForGeneration(limit, excludeArticleIds = []) {
     `SELECT a.id, a.url, a.title, a.content, a.topic_key, a.topic_name,
             COALESCE(a.published_at, a.lastmod) AS published_at,
             COALESCE(a.published_at, a.lastmod) AS article_date,
-            s.code AS source_code, s.content_mode, k.cluster, a.keyword_id
+            s.code AS source_code, s.content_mode, k.cluster, a.keyword_id,
+            k.phrase AS keyword_phrase, k.angle
        FROM articles a
        JOIN sources s ON s.id = a.source_id
        LEFT JOIN keywords k ON k.id = a.keyword_id

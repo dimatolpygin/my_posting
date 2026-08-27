@@ -34,7 +34,10 @@ export function isConfigured() {
   return Boolean(config.openrouter.apiKey);
 }
 
-/** Модели по порядку: основная, затем фолбэк. Фолбэк можно отключить, оставив пустым. */
+/**
+ * Модели по порядку: основная, затем запасная. Перебирает их наш код, а не OpenRouter
+ * (см. комментарий в chat): его поле `models` подменяет модель молча.
+ */
 export function modelChain() {
   return [config.openrouter.model, config.openrouter.fallbackModel].filter(Boolean);
 }
@@ -67,42 +70,72 @@ export async function chat({
     throw new OpenRouterError('Не задан OPENROUTER_API_KEY — генерация текста недоступна');
   }
 
-  const body = { models, messages, temperature, max_tokens: maxTokens };
-  if (serviceTier) body.service_tier = serviceTier;
-  if (sessionId) body.session_id = sessionId;
-  if (schema) {
-    body.response_format = {
-      type: 'json_schema',
-      json_schema: { name: schemaName, strict: true, schema },
-    };
-    body.provider = { require_parameters: true };
-  }
+  const chain = Array.isArray(models) ? models.filter(Boolean) : [models].filter(Boolean);
+  if (chain.length === 0) throw new OpenRouterError('Не задана ни одна модель');
+
+  const buildBody = (model) => {
+    // Одна модель в поле `model`, и никакого поля `models`.
+    //
+    // Поле `models` выглядит как «основная, затем запасная», но ведёт себя иначе:
+    // OpenRouter считает список равноправным набором кандидатов и маршрутизирует
+    // по своим соображениям. На живой проверке пара [claude-sonnet-5, gemini-3.7-flash]
+    // раз за разом уходила в gemini — то есть выбранная модель молча подменялась
+    // более дешёвой, и понять это можно было только по полю `model` в ответе.
+    // Поэтому перебор запасных делаем сами, ниже по коду.
+    const out = { model, messages, temperature, max_tokens: maxTokens };
+    if (serviceTier) out.service_tier = serviceTier;
+    if (sessionId) out.session_id = sessionId;
+    if (schema) {
+      out.response_format = {
+        type: 'json_schema',
+        json_schema: { name: schemaName, strict: true, schema },
+      };
+      // Провайдер обязан поддерживать структурированный вывод. Побочный эффект:
+      // из выдачи выпадают все, кроме Google, — Anthropic и OpenAI такую поддержку
+      // не заявляют, и запрос отвечает «404 No endpoints found».
+      out.provider = { require_parameters: true };
+    }
+    return out;
+  };
 
   const startedAt = Date.now();
   let json;
-  try {
-    json = await request(`${config.openrouter.baseUrl}/chat/completions`, {
-      method: 'POST',
-      label: 'openrouter',
-      json: body,
-      timeoutMs: config.openrouter.timeoutMs,
-      retries,
-      headers: {
-        Authorization: `Bearer ${config.openrouter.apiKey}`,
-        Accept: 'application/json',
-        'X-OpenRouter-Title': 'my-posting',
-      },
-    });
-  } catch (error) {
-    // Тело ошибки провайдера информативнее статуса: там причина отказа модели.
-    if (error instanceof HttpError) {
-      const detail = parseErrorBody(error.body);
-      throw new OpenRouterError(
-        `OpenRouter ${error.status}: ${detail ?? 'без описания'}`,
-        { code: error.status, cause: error },
+  let lastError;
+  for (const [index, model] of chain.entries()) {
+    try {
+      json = await request(`${config.openrouter.baseUrl}/chat/completions`, {
+        method: 'POST',
+        label: 'openrouter',
+        json: buildBody(model),
+        timeoutMs: config.openrouter.timeoutMs,
+        retries,
+        headers: {
+          Authorization: `Bearer ${config.openrouter.apiKey}`,
+          Accept: 'application/json',
+          'X-OpenRouter-Title': 'my-posting',
+        },
+      });
+      break;
+    } catch (error) {
+      // Тело ошибки провайдера информативнее статуса: там причина отказа модели.
+      lastError = error instanceof HttpError
+        ? new OpenRouterError(
+          `OpenRouter ${error.status}: ${parseErrorBody(error.body) ?? 'без описания'}`,
+          { code: error.status, cause: error },
+        )
+        : error;
+      const isLast = index === chain.length - 1;
+      // Ключ и запрет доступа запасной моделью не лечатся, а вот 402 — лечится:
+      // OpenRouter держит на запрос залог по потолку токенов, и на дорогой модели
+      // его может не хватить там, где дешёвой остатка достаточно. Ровно так и вышло
+      // на живом прогоне: claude отвечал 402, а gemini на том же остатке работал.
+      const hopeless = [401, 403].includes(lastError.code);
+      if (isLast || hopeless) throw lastError;
+      logger.warn(
+        { модель: model, запасная: chain[index + 1], причина: lastError.message },
+        `Модель ${model} не ответила — пробуем запасную ${chain[index + 1]}`,
       );
     }
-    throw error;
   }
   const latencyMs = Date.now() - startedAt;
 

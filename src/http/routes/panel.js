@@ -1512,6 +1512,7 @@ export function panelRouter() {
   router.get('/posts/:id', async (req, res, next) => {
     try {
       const post = await posts.findById(Number.parseInt(req.params.id, 10));
+      const usedFacts = post ? await facts.forPost(post.id) : [];
       if (!post) return res.status(404).type('html').send(
         page({ title: 'Пост', active: '/posts', user: req.user, heading: 'Пост не найден',
                sub: '', body: '<div class="card">Такого поста нет.</div>' }),
@@ -1530,8 +1531,25 @@ export function panelRouter() {
             <tr><th>Стоимость</th><td>${post.cost_usd ? `$${Number(post.cost_usd).toFixed(6)}` : '—'}</td></tr>
             <tr><th>Латентность</th><td>${esc(post.latency_ms ?? '—')} мс, попыток ${esc(post.attempts)}</td></tr>
             <tr><th>Длина</th><td>${post.char_count} символов</td></tr>
+            <tr><th>Конец поста</th><td>${tailText(post.tail_kind)}</td></tr>
+            <tr><th>Схожесть</th><td>${similarityText(post)}</td></tr>
             <tr><th>request-id</th><td><code>${esc(post.request_id ?? '—')}</code></td></tr>
           </table>
+        </div>
+        <div class="card">
+          <h2 style="margin-top:0">Из чего собран</h2>
+          ${usedFacts.length === 0
+            ? '<p class="hint" style="margin:0">Пост сделан без факт-базы: либо до этапа 4, либо под его тему не нашлось карточек.</p>'
+            : `<table>
+                 <thead><tr><th>Тип</th><th>Карточка</th></tr></thead>
+                 <tbody>${usedFacts.map((item) => `<tr>
+                   <td>${esc(facts.kindText(item.kind))}</td>
+                   <td><a href="/facts?kind=${item.kind}">${esc(item.title)}</a></td>
+                 </tr>`).join('')}</tbody>
+               </table>
+               <p class="hint" style="margin:10px 0 0">
+                 У каждой карточки после этого поста вырос счётчик использований —
+                 в ближайшие темы она уже не попадёт.</p>`}
         </div>
         <div class="card">
           <h2 style="margin-top:0">Обложка</h2>
@@ -2728,6 +2746,31 @@ export function panelRouter() {
   });
 
   /** Карточка промта: правка, история версий, откат. */
+  /** Что стоит в конце поста — человеческим языком. */
+  function tailText(kind) {
+    const map = {
+      kwork: 'рекламный блок со ссылкой на Kwork',
+      visa: 'реф-ссылка на виртуальную карту',
+      vps: 'реф-ссылка на сервер',
+      none: 'без ссылки, отсылка к описанию группы',
+    };
+    return esc(map[kind] ?? '—');
+  }
+
+  /**
+   * Схожесть с прошлым постом. Показываем даже нулевую: пустая ячейка читается
+   * как «не проверяли», а это разные вещи.
+   */
+  function similarityText(post) {
+    if (post.similarity === null || post.similarity === undefined) {
+      return '<span class="hint">не считалась</span>';
+    }
+    const value = Number(post.similarity);
+    const percent = (value * 100).toFixed(0);
+    if (!post.similar_to) return `${percent}% <span class="hint">(сравнивать было не с чем)</span>`;
+    return `${percent}% с постом <a href="/posts/${post.similar_to}">#${post.similar_to}</a>`;
+  }
+
   async function promptCard(key, title, rows, hint) {
     const active = await prompts.getActive(key);
     const versions = await prompts.listVersions(key, 10);

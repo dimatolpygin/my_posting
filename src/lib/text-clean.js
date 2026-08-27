@@ -5,17 +5,18 @@
  * работает через раз, а чистка регулярками работает всегда. Промт отвечает за стиль,
  * код — за чистоту разметки.
  *
- * Что НЕЛЬЗЯ трогать (осознанный стиль клиента, а не мусор):
+ * Что НЕЛЬЗЯ трогать (осознанный стиль, а не мусор):
  *   - сами булиты в начале строки: так устроен формат поста в промте;
- *   - эмодзи-иконки 🔰 ❗️ ✅ — маркеры подзаголовков и рекламного блока;
+ *   - эмодзи-иконки в подзаголовках: для ОК и аудитории 30+ они работают;
  *   - разделители «--------» вокруг рекламного блока.
+ *
+ * Чистка идёт по тексту МОДЕЛИ, до сборки готовой темы: заголовок и хвост
+ * приклеивает код, и чистить в них нечего.
  *
  * Что делается с тире: внутри предложения оно убирается, а там, где остаётся
  * (булиты, рекламный блок), длинное «—» заменяется коротким «-». Длинных тире
  * в готовом тексте не остаётся вообще — требование заказчика.
  */
-
-import { projectTokens, foldLatin } from './topic.js';
 
 /** Строка-булит: тире (или дефис) с пробелом в начале строки. Сам булит сохраняем. */
 const BULLET_LINE = /^(\s*)[—–-]\s+/;
@@ -150,23 +151,24 @@ export function trimBulletLists(text, keepPerBlock = 3) {
 }
 
 /**
- * Проверка поста на соответствие требованиям промта. Возвращает список нарушений;
- * пустой список = пост годен. Генерация повторяется, пока список не опустеет.
+ * Проверка готового текста темы. Возвращает список нарушений; пустой список = годен.
+ * Нарушения уходят модели следующей попыткой — это работает заметно лучше, чем
+ * просто повторить тот же запрос.
+ *
+ * На вход идёт ГОТОВЫЙ текст темы: первая строка-заголовок, тело и подставленный
+ * хвост. Не текст модели — его проверяет `validateModelText`.
  *
  * @param {string} text
  * @param {object} rules
  * @param {number} rules.minChars
  * @param {number} rules.maxChars
- * @param {string} rules.adLink   ссылка рекламного блока
- * @param {string} [rules.topicName] название проекта — должно быть в первом абзаце
+ * @param {string} [rules.phrase] фраза ключа — она же обязана быть первой строкой
  */
-export function validatePost(text, { minChars, maxChars, adLink, topicName }) {
+export function validatePost(text, { minChars, maxChars, phrase }) {
   const problems = [];
   const value = String(text ?? '');
 
-  // Ноль в любом из пределов = ограничения нет. Верхний предел по умолчанию снят по
-  // решению: в теме Одноклассников помещается заведомо больше нашего объёма, а лишние
-  // двести символов у хорошего в остальном поста не повод его выбрасывать.
+  // Ноль в любом из пределов = ограничения нет.
   if (minChars > 0 && value.length < minChars) {
     problems.push(`коротко: ${value.length} символов, нужно от ${minChars}`);
   }
@@ -174,88 +176,111 @@ export function validatePost(text, { minChars, maxChars, adLink, topicName }) {
     problems.push(`длинно: ${value.length} символов, нужно до ${maxChars}`);
   }
 
-  // «Первый абзац» — первые два блока до пустой строки. Два, а не один: заголовок
-  // приходит отдельным полем схемы, но модель нередко дублирует его первой строкой тела,
-  // и тогда зачин со словом «отзыв» оказывается во втором блоке. Проверка по одному
-  // блоку отбраковывала нормальные посты (поймано на первом живом прогоне).
-  const blocks = value.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean);
-  const firstParagraph = blocks.slice(0, 2).join('\n').toLowerCase();
+  // Заголовок. Одноклассники собирают <title> страницы из ПЕРВОЙ СТРОКИ текста —
+  // отдельного поля заголовка у темы нет. Значит первая строка обязана быть точной
+  // фразой запроса: по ней тема ранжируется, и ничем другим её не заменить.
+  if (phrase) {
+    const first = value.split('\n')[0].trim();
+    if (first !== phrase.trim()) {
+      problems.push(`первая строка не равна фразе ключа: «${first.slice(0, 80)}»`);
+    }
+    // Заголовок, повторённый внутри текста, забирает место в сниппете и читается
+    // как заедающая пластинка.
+    const body = value.slice(value.indexOf('\n') + 1);
+    if (body.includes(phrase.trim())) problems.push('фраза ключа повторена внутри текста');
+  }
 
-  if (!/отзыв/.test(firstParagraph)) {
-    problems.push('в первом абзаце нет слова «отзыв»');
+  // Пример диалога — самая ценная часть темы: он показывает продукт лучше любого
+  // описания. Проверяем кодом, потому что модель считает его необязательным
+  // украшением и выбрасывает первым, когда ужимает текст.
+  const lines = value.split('\n');
+  const clientLines = lines.filter((line) => /^\s*клиент\s*:/i.test(line)).length;
+  const agentLines = lines.filter((line) => /^\s*агент\s*:/i.test(line)).length;
+  if (clientLines < 3 || agentLines < 3) {
+    problems.push(
+      `нет примера диалога: реплик клиента ${clientLines}, агента ${agentLines}, ` +
+        'нужно минимум по 3 в виде «Клиент: …» и «Агент: …»',
+    );
   }
-  if (topicName && !mentionsProject(firstParagraph, topicName)) {
-    problems.push(`в первом абзаце нет названия проекта («${topicName}»)`);
-  }
-  // Структура из промта клиента: два блока с булитами и блок «Итог». Проверяем кодом,
-  // а не надеемся на модель: без булитов тема читается стеной текста.
-  // Булит после чистки короткий, но принимаем и длинное тире: валидация вызывается
-  // и на тексте до постобработки (в тестах и при разборе сбоев).
-  const bulletLines = value.split('\n').filter((line) => /^\s*[—–-]\s+\S/.test(line)).length;
+
+  // Булиты: без них тема читается стеной текста, а её будут листать с телефона.
+  const bulletLines = lines.filter((line) => /^\s*[—–-]\s+\S/.test(line)).length;
   if (bulletLines < 4) {
     problems.push(`мало пунктов-булитов: ${bulletLines}, нужно минимум 4 (по 2-3 в двух блоках)`);
   }
-  // Без \b: в JS границей слова считается только ASCII, и после кириллического «итог»
-  // \b не срабатывает — проверка не находила даже строку «Итог:».
-  if (!/^\s*итог/im.test(value)) {
-    problems.push('нет блока «Итог»');
-  }
 
-  if (adLink && !value.includes(adLink)) {
-    problems.push(`нет рекламного блока со ссылкой ${adLink}`);
-  }
   if (/\*\*|^#{1,6}\s|\[[^\]]+\]\(/m.test(value)) {
     problems.push('осталась markdown-разметка');
+  }
+  if (/[—–]/.test(value)) {
+    problems.push('остались длинные тире');
   }
 
   return problems;
 }
 
 /**
- * Название проекта в первом абзаце. Сравнение нежёсткое: модель пишет «PipNest Markets»,
- * «Пипнест» или «pipnest markets» — требовать точного совпадения строки бессмысленно.
- *
- * Совпадением считается ЛЮБОЕ значимое слово названия, а не самое длинное. Раньше
- * бралось самое длинное — и на живом прогоне это забраковало три подряд нормальных
- * поста: тема пришла slug'ом «xrp-turbo-io-razoblachenie», самым длинным словом
- * оказалось «razoblachenie», а в тексте, разумеется, было «XRP Turbo».
- * Жанровые слова и доменные зоны выброшены (см. projectTokens): по ним проверять
- * нечего. Если после чистки значимых слов не осталось — проверку не применяем:
- * брак поста из-за мусорного названия темы был бы наказанием не за то.
+ * Штампы, по которым текст читается как машинный. Список короткий и злой: сюда
+ * попадают только обороты, которые модель ставит сама и от которых текст не теряет
+ * ничего при удалении.
  */
-function mentionsProject(paragraph, topicName) {
-  const haystack = paragraph.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
-  const { words, folded } = projectTokens(topicName);
-  if (words.length === 0) return true;
+const CLICHES = [
+  'в современном мире',
+  'в наше время',
+  'сегодня бизнес',
+  'динамично развива',
+  'не секрет, что',
+  'в условиях современного',
+  'играет важную роль',
+  'осуществляется',
+  'в рамках данного',
+  'является ключевым',
+];
 
-  const compact = words.join('').toLowerCase();
-  if (compact.length >= 4 && haystack.includes(compact)) return true;
+/**
+ * Проверка текста, который написала модель, — до сборки готовой темы.
+ *
+ * Отдельно от `validatePost` по одной причине: ссылки. В готовой теме ссылка есть
+ * и обязана быть, а в тексте модели её быть не должно ни в каком виде — адрес
+ * подставляет код, и выдуманный моделью адрес увёл бы человека в никуда.
+ *
+ * @returns {string[]} список нарушений
+ */
+export function validateModelText(text) {
+  const problems = [];
+  const value = String(text ?? '');
 
-  // Транслит с обеих сторон: название латиницей, а пост кириллицей (и наоборот) —
-  // обычное дело, «Atlas capital» против «Атлас Капитал».
-  const haystackFolded = foldLatin(haystack);
-  if (words.some((word, index) => {
-    const value = word.toLowerCase();
-    if (value.length >= 4 && haystack.includes(value)) return true;
-    const key = folded[index];
-    return key.length >= 4 && haystackFolded.includes(key);
-  })) return true;
+  if (/(https?:\/\/|www\.|[a-zа-я0-9-]+\.(ru|com|net|org|io|ai)\b)/i.test(value)) {
+    problems.push('в тексте есть ссылка или адрес сайта, а их подставляет система');
+  }
+  if (/@[a-zа-я0-9_]/i.test(value)) {
+    problems.push('в тексте есть собака: ни почт, ни ников писать не нужно');
+  }
+  if (/(\+7|\b8)[\s(-]?\d{3}[\s)-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}/.test(value)) {
+    problems.push('в тексте есть номер телефона');
+  }
 
-  // Короткие названия. Порог в четыре символа взят против ложных совпадений: обрывок
-  // из двух букв найдётся в любом тексте. Но проект «CLW» — это всё название целиком,
-  // и раньше проверка для него проваливалась всегда, каким бы ни был пост: на проде
-  // это стоило трёх попыток генерации и потерянной темы. Ищем такое название как
-  // отдельное слово, по границам, в исходном тексте, а не в сжатом.
-  const short = words.filter((word) => word.length >= 2 && word.length < 4);
-  if (short.length === 0) return false;
-  const paragraphFolded = foldLatin(paragraph);
-  return short.some((word) => {
-    const value = word.toLowerCase();
-    const asWord = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(value)}(?![\\p{L}\\p{N}])`, 'u');
-    return asWord.test(paragraph) || asWord.test(paragraphFolded);
-  });
+  const lower = value.toLowerCase();
+  const found = CLICHES.filter((cliche) => lower.includes(cliche));
+  if (found.length > 0) {
+    problems.push(`канцелярит и штампы: ${found.join(', ')} — переписать своими словами`);
+  }
+
+  return problems;
 }
 
-function escapeRe(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Латиница в тексте. Не нарушение, а замечание в журнал: аудитория 30+ читает
+ * «Вотсап», а не латиницей, но брак поста из-за одного слова обошёлся бы дороже,
+ * чем само слово. Разрешённые сокращения берём те же, что и в факт-базе.
+ *
+ * @returns {string[]} найденные слова латиницей
+ */
+export function latinWords(text, allowed = ['CRM', 'API', 'PDF', 'SMS', 'QR', 'SEO', 'IT']) {
+  const ok = new Set(allowed.map((word) => word.toUpperCase()));
+  const found = new Set();
+  for (const match of String(text ?? '').matchAll(/[A-Za-z][A-Za-z0-9+]*/g)) {
+    if (!ok.has(match[0].toUpperCase())) found.add(match[0]);
+  }
+  return [...found];
 }

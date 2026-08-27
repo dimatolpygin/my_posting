@@ -1,7 +1,24 @@
+import net from 'node:net';
 import { log, errFields } from '../logger.js';
 import { getRequestId } from '../context.js';
 
 const logger = log('внешний-запрос');
+
+/**
+ * Сколько ждать TCP-подключения по одному адресу, прежде чем пробовать следующий.
+ *
+ * Это не таймаут запроса, а «happy eyeballs»: Node пробует IPv6 и IPv4 параллельно
+ * и по умолчанию даёт каждой попытке 250 миллисекунд. У контейнера маршрута в IPv6
+ * нет, а рукопожатие по IPv4 до Cloudflare (openrouter.ai, api.kie.ai) с российского
+ * канала занимает секунду и больше — не укладывается, и fetch падает с «fetch failed»
+ * там, где wget из того же контейнера отвечает 200. Ровно этот эффект полгода
+ * выглядел как «у контейнера свой выход в интернет, до openrouter он не доходит».
+ *
+ * Пять секунд: с запасом на медленное рукопожатие и заметно меньше таймаута запроса,
+ * так что мёртвый адрес по-прежнему отваливается быстрее, чем истечёт сам запрос.
+ */
+const CONNECT_ATTEMPT_TIMEOUT_MS = 5000;
+net.setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
 
 /**
  * Единая точка исходящих HTTP-запросов. Через неё пойдут firecrawl, openrouter, kie.ai

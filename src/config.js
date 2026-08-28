@@ -34,6 +34,27 @@ function envBool(name, fallback) {
   return ['1', 'true', 'yes', 'да'].includes(raw.toLowerCase());
 }
 
+/**
+ * Реквизиты БД одной строкой: `postgresql://user:pass@host:5432/base`.
+ *
+ * Так их отдаёт общий сервер (файл `.env.infra`, его пишет okhost): Postgres там один
+ * на все проекты, у каждого своя база и свой пользователь внутри него, и разложить
+ * это по привычным POSTGRES_* пришлось бы руками при каждом переезде. Если строки нет —
+ * работают отдельные переменные, как в dev и на выделенном сервере.
+ *
+ * Пароль от okhost содержит спецсимволы, поэтому части берём разбором URL, а не
+ * регулярным выражением: `URL` сам снимает процентное кодирование.
+ */
+const dbUrl = (() => {
+  const raw = env('DATABASE_URL');
+  if (!raw) return null;
+  try {
+    return new URL(raw);
+  } catch {
+    throw new Error(`DATABASE_URL не разбирается как адрес: ${raw.slice(0, 40)}...`);
+  }
+})();
+
 export const config = {
   nodeEnv: env('NODE_ENV', { fallback: 'development' }),
   get isProd() {
@@ -50,12 +71,14 @@ export const config = {
   },
 
   db: {
-    // В докере хост — имя сервиса postgres; локально — localhost.
-    host: env('POSTGRES_HOST', { fallback: 'postgres' }),
-    port: envInt('POSTGRES_PORT', 5432),
-    user: env('POSTGRES_USER', { required: true }),
-    password: env('POSTGRES_PASSWORD', { required: true }),
-    database: env('POSTGRES_DB', { required: true }),
+    // В докере хост — имя сервиса postgres; локально — localhost. На общем сервере
+    // реквизиты приходят одной строкой DATABASE_URL и разбираются выше: там своя
+    // база на проект внутри чужого контейнера, и по отдельным переменным её не задать.
+    host: dbUrl ? dbUrl.hostname : env('POSTGRES_HOST', { fallback: 'postgres' }),
+    port: dbUrl ? Number(dbUrl.port || 5432) : envInt('POSTGRES_PORT', 5432),
+    user: dbUrl ? decodeURIComponent(dbUrl.username) : env('POSTGRES_USER', { required: true }),
+    password: dbUrl ? decodeURIComponent(dbUrl.password) : env('POSTGRES_PASSWORD', { required: true }),
+    database: dbUrl ? decodeURIComponent(dbUrl.pathname.slice(1)) : env('POSTGRES_DB', { required: true }),
     // Ждём готовности БД на старте: контейнер app может подняться раньше postgres.
     connectRetries: envInt('DB_CONNECT_RETRIES', 30),
     connectRetryDelayMs: envInt('DB_CONNECT_RETRY_DELAY_MS', 2000),

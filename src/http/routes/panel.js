@@ -13,6 +13,9 @@ import * as groups from '../../repo/groups.js';
 import * as publications from '../../repo/publications.js';
 import * as runs from '../../repo/runs.js';
 import * as appErrors from '../../repo/errors.js';
+import * as clicksRepo from '../../repo/clicks.js';
+import { clickUrl, TARGET_TITLES } from '../../lib/clicks.js';
+import { config } from '../../config.js';
 import { checkSource } from '../../services/check-source.js';
 import { buildPlan } from '../../services/plan-run.js';
 import { startCycleInBackground, runningSince, lastBackgroundError } from '../../services/run-cycle.js';
@@ -949,6 +952,40 @@ export function panelRouter() {
           </form>
         </div>
         <div class="card">
+          <h2 style="margin-top:0">Куда ведут ссылки из постов</h2>
+          <p class="hint" style="margin:0 0 12px">
+            В тексте стоит не прямой адрес, а свой редиректор: <code>/k/{номер поста}</code>
+            для Kwork и <code>/k/visa/{номер}</code>, <code>/k/vps/{номер}</code> для
+            реф-ссылок. Только так видно, какая тема принесла переход — Kwork источник
+            трафика не отдаёт. Здесь задаётся, куда редиректор отправляет человека.
+            Отчёт — в разделе <a href="/clicks">«Переходы»</a>.
+          </p>
+          <form method="post" action="/settings/links">
+            <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+              <label style="flex:1;min-width:320px">профиль на Kwork &mdash; <code>/k/{номер}</code><br>
+                <input type="text" name="kwork_url" value="${esc(map.kwork_url ?? '')}"></label>
+              <label style="flex:1;min-width:320px">виртуальная карта &mdash; <code>/k/visa</code><br>
+                <input type="text" name="visa_url" value="${esc(map.visa_url ?? '')}"></label>
+              <label style="flex:1;min-width:320px">сервер &mdash; <code>/k/vps</code><br>
+                <input type="text" name="vps_url" value="${esc(map.vps_url ?? '')}"></label>
+              <label style="flex:1;min-width:320px">Телеграм &mdash; <code>/k/tg</code><br>
+                <input type="text" name="tg_url" value="${esc(map.tg_url ?? '')}"></label>
+              <label style="flex:1;min-width:320px">MAX &mdash; <code>/k/max</code><br>
+                <input type="text" name="max_url" value="${esc(map.max_url ?? '')}"></label>
+              <label>блок со ссылкой в каждый N-й пост<br>
+                <input type="number" name="ad_block_every_n" min="1" max="10"
+                       value="${esc(map.ad_block_every_n)}" style="width:80px"></label>
+              <button type="submit">Сохранить</button>
+            </div>
+            <p class="hint" style="margin:10px 0 0">
+              Пустой адрес выключает ссылку: редиректор ответит 404, а не отправит
+              человека в никуда. Рекламный блок стоит не в каждом посте намеренно —
+              одинаковый коммерческий хвост во всех темах быстрее ловит урезание охвата
+              в ОК и подозрение на спам у Яндекса.
+            </p>
+          </form>
+        </div>
+        <div class="card">
           <h2 style="margin-top:0">Режим публикации</h2>
           <p style="margin:0 0 10px">Сейчас: ${publishModeTag(mode)}</p>
           <p class="hint" style="margin:0 0 12px">
@@ -993,6 +1030,35 @@ export function panelRouter() {
 
   // Переключатель режима публикации. Отдельным роутом, а не общей формой настроек:
   // это единственное значение, ошибка в котором видна подписчикам группы.
+  /**
+   * Адреса, куда уводит редиректор. Пустое значение — законный вариант: он
+   * выключает ссылку, и переход получит честный 404 вместо отправки в никуда.
+   */
+  router.post('/settings/links', async (req, res) => {
+    try {
+      const fields = {
+        kwork_url: 'Профиль на Kwork',
+        visa_url: 'Виртуальная карта',
+        vps_url: 'Сервер',
+        tg_url: 'Телеграм',
+        max_url: 'MAX',
+      };
+      for (const [key, title] of Object.entries(fields)) {
+        const value = String(req.body[key] ?? '').trim();
+        if (value && !/^https?:\/\/\S+$/.test(value)) {
+          throw new Error(`${title}: адрес должен начинаться с http:// или https://`);
+        }
+        await settings.set(key, value);
+      }
+      const everyN = requireInt(req.body.ad_block_every_n, 1, 10, 'Блок со ссылкой в каждый N-й пост');
+      await settings.set('ad_block_every_n', String(everyN));
+      logger.info({ каждый: everyN }, 'Адреса редиректора сохранены');
+      res.redirect('/settings?ok=Адреса+ссылок+сохранены');
+    } catch (error) {
+      res.redirect(`/settings?err=${encodeURIComponent(error.message)}`);
+    }
+  });
+
   router.post('/settings/publish-mode', async (req, res) => {
     try {
       const mode = req.body.mode === 'live' ? 'live' : 'draft';
@@ -2381,6 +2447,198 @@ export function panelRouter() {
   });
 
   // ── Ошибки ───────────────────────────────────────────────────────────────
+  /**
+   * Переходы. Главный экран проекта: по нему решается, какие кластеры ключей
+   * масштабировать, а какие закрывать. Цепочка обрывается на Kwork — дальше
+   * «переход → заказ» не отследить, поэтому вопрос «откуда вы про меня узнали»
+   * при первом контакте задавать всё равно придётся.
+   */
+  router.get('/clicks', async (req, res, next) => {
+    try {
+      const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+      const [сводка, темы, кластеры, цели, откуда, посты, последние] = await Promise.all([
+        clicksRepo.totals(days),
+        clicksRepo.byPost(days, 50),
+        clicksRepo.byCluster(days),
+        clicksRepo.byTarget(days),
+        clicksRepo.bySource(days),
+        clicksRepo.postsWithLink(days),
+        clicksRepo.recent(30),
+      ]);
+
+      const periods = [7, 30, 90]
+        .map(
+          (value) => `<a href="/clicks?days=${value}" class="tag ${value === days ? 'on' : 'off'}"
+             style="text-decoration:none">${value} дней</a>`,
+        )
+        .join(' ');
+
+      const stats = `<div class="grid">
+          <div class="card stat"><div class="n">${сводка.уникальные}</div>
+            <div class="l">разных людей пришло</div></div>
+          <div class="card stat"><div class="n">${сводка.люди}</div>
+            <div class="l">всего переходов</div></div>
+          <div class="card stat"><div class="n">${посты.со_ссылкой} из ${посты.опубликовано}</div>
+            <div class="l">тем со ссылкой</div></div>
+          <div class="card stat"><div class="n">${сводка.роботы}</div>
+            <div class="l">роботов отсеяно</div></div>
+        </div>`;
+
+      const clusterRows = кластеры.length
+        ? кластеры
+            .map(
+              (row) => `<tr>
+                <td>${esc(row.кластер ?? 'без кластера')}</td>
+                <td>${row.постов}</td>
+                <td>${row.со_ссылкой}</td>
+                <td><b>${row.уникальные}</b></td>
+                <td class="hint">${
+                  row.со_ссылкой > 0 ? (row.уникальные / row.со_ссылкой).toFixed(2) : '&mdash;'
+                }</td>
+              </tr>`,
+            )
+            .join('\n')
+        : '<tr><td colspan="5" class="empty">Пока ни одной опубликованной темы с ключом</td></tr>';
+
+      const postRows = темы.length
+        ? темы
+            .map(
+              (row) => `<tr>
+                <td><a href="/posts/${row.post_id}">#${row.post_id}</a></td>
+                <td>${esc(cut(row.title ?? row.ключ ?? '', 70))}
+                    ${row.кластер ? `<br><span class="hint">${esc(row.кластер)}</span>` : ''}</td>
+                <td><b>${row.уникальные}</b></td>
+                <td>${row.переходы}</td>
+                <td class="hint">${esc(formatDate(row.последний))}</td>
+              </tr>`,
+            )
+            .join('\n')
+        : '<tr><td colspan="5" class="empty">Переходов пока не было</td></tr>';
+
+      const targetRows = цели.length
+        ? цели
+            .map(
+              (row) => `<tr>
+                <td>${esc(TARGET_TITLES[row.target] ?? row.target)}
+                    <span class="hint">/k/${esc(row.target)}</span></td>
+                <td><b>${row.уникальные}</b></td>
+                <td>${row.переходы}</td>
+              </tr>`,
+            )
+            .join('\n')
+        : '<tr><td colspan="3" class="empty">нет данных</td></tr>';
+
+      const sourceRows = откуда.length
+        ? откуда
+            .map((row) => `<tr><td>${esc(row.откуда)}</td><td>${row.переходы}</td></tr>`)
+            .join('\n')
+        : '<tr><td colspan="2" class="empty">нет данных</td></tr>';
+
+      const recentRows = последние.length
+        ? последние
+            .map(
+              (row) => `<tr>
+                <td class="hint">${esc(formatDate(row.created_at))}</td>
+                <td>${esc(TARGET_TITLES[row.target] ?? row.target)}</td>
+                <td>${
+                  row.post_id
+                    ? `<a href="/posts/${row.post_id}">#${row.post_id}</a>`
+                    : '<span class="hint">&mdash;</span>'
+                }
+                    ${row.ключ ? `<br><span class="hint">${esc(cut(row.ключ, 50))}</span>` : ''}</td>
+                <td>${
+                  row.is_bot
+                    ? '<span class="tag off">робот</span>'
+                    : '<span class="tag on">человек</span>'
+                }</td>
+                <td class="hint">${esc(cut(row.referer ?? 'прямой заход', 60))}</td>
+              </tr>`,
+            )
+            .join('\n')
+        : '<tr><td colspan="5" class="empty">Переходов ещё не было</td></tr>';
+
+      const base = config.publicBaseUrl.replace(/\/+$/, '');
+      const body = `<div class="card">
+          <p style="margin:0 0 12px">Период: ${periods}</p>
+          ${stats}
+        </div>
+
+        <h2>По кластерам ключей</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Кластер</th><th>Тем опубликовано</th><th>Из них со ссылкой</th>
+              <th>Людей пришло</th><th>На тему со ссылкой</th></tr></thead>
+            <tbody>${clusterRows}</tbody>
+          </table>
+          <p class="hint" style="margin:12px 0 0">
+            Последняя колонка — сколько людей приносит одна тема с рекламным блоком.
+            Делить на все темы нельзя: блок стоит не в каждой, это настройка
+            <code>ad_block_every_n</code>.
+          </p>
+        </div>
+
+        <h2>По темам</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Пост</th><th>Тема</th><th>Людей</th>
+              <th>Переходов</th><th>Последний</th></tr></thead>
+            <tbody>${postRows}</tbody>
+          </table>
+        </div>
+
+        <h2>Куда уходят и откуда приходят</h2>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="card">
+            <table>
+              <thead><tr><th>Куда</th><th>Людей</th><th>Переходов</th></tr></thead>
+              <tbody>${targetRows}</tbody>
+            </table>
+          </div>
+          <div class="card">
+            <table>
+              <thead><tr><th>Откуда пришли</th><th>Переходов</th></tr></thead>
+              <tbody>${sourceRows}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <h2>Последние переходы</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Когда</th><th>Куда</th><th>Из темы</th>
+              <th>Кто</th><th>Откуда</th></tr></thead>
+            <tbody>${recentRows}</tbody>
+          </table>
+          <p class="hint" style="margin:12px 0 0">
+            Роботы записаны, но в счётчики выше не попадают: превьюшный робот ОК дёргает
+            ссылку в момент публикации, и без отсева каждая тема получала бы «переход»
+            ровно в день выхода. Адреса ссылок: <code>${esc(base)}/k/{номер поста}</code> —
+            Kwork, <code>${esc(base)}/k/visa/{номер}</code> и
+            <code>${esc(base)}/k/vps/{номер}</code> — реф-ссылки,
+            <code>${esc(base)}/k/tg</code> и <code>${esc(base)}/k/max</code> — для автоответов
+            группы. Куда они ведут, задаётся в настройках.
+          </p>
+          <p class="hint" style="margin:8px 0 0">
+            Дальше Kwork цепочку не видно: сколько переходов стало заказами, площадка
+            не показывает. Спрашивайте при первом контакте, откуда человек пришёл.
+          </p>
+        </div>`;
+
+      res.type('html').send(
+        page({
+          title: 'Переходы',
+          active: '/clicks',
+          user: req.user,
+          heading: 'Переходы по ссылкам',
+          sub: 'Кто дошёл от темы в группе до профиля. По этим цифрам решается, какие кластеры ключей масштабировать.',
+          body,
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get('/errors', async (req, res, next) => {
     try {
       const runId = Number.parseInt(req.query.run, 10);

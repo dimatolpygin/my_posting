@@ -28,6 +28,7 @@ const NAV = [
   { href: '/archive', title: 'Из архива' },
   { href: '/runs', title: 'Прогоны' },
   { href: '/published', title: 'Опубликовано' },
+  { href: '/clicks', title: 'Переходы' },
   { href: '/errors', title: 'Ошибки' },
 ];
 

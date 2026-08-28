@@ -10,6 +10,8 @@ import { buildTail, renderLinks, hasPlaceholders } from '../lib/post-tail.js';
 import { shingles, mostSimilar } from '../lib/shingle.js';
 import { collectMaterial, collectForKeyword } from './research.js';
 import { postShape } from '../lib/post-shape.js';
+import { clickUrl } from '../lib/clicks.js';
+import { config } from '../config.js';
 import { pickFacts, factsToPrompt } from './pick-facts.js';
 import * as prompts from '../repo/prompts.js';
 import * as posts from '../repo/posts.js';
@@ -162,25 +164,35 @@ function fixInstruction(problems, { budget, length }) {
  * с одной задачей «сократи» работает там, где переписывание с нуля не помогает:
  * модель уже не сочиняет заново, а режет готовое.
  */
-async function shrinkBody(body, { budget, temperature, serviceTier }) {
+async function shrinkBody(body, { budget, temperature, serviceTier, shape }) {
   // Доля, а не абсолютное число: «убери примерно четверть текста» модель выполняет
   // заметно точнее, чем «уложись в 2090 знаков» — считать символы она не умеет.
   const cutPercent = Math.max(10, Math.round((1 - budget / body.length) * 100));
+
+  // Вид темы редактору обязателен. Прежнее «сохраняй пример диалога целиком» стояло
+  // безусловно, и на разборе вопроса редактор понимал его как разрешение диалог
+  // дописать: сокращённый текст выходил нужной длины и тут же падал на проверке
+  // «убери блок с диалогом». Тема терялась на ровном месте.
+  const dialogueRule = shape === 'продукт'
+    ? 'Пример диалога сохрани полностью: это самая ценная часть текста.'
+    : 'Диалогов и сценок в тексте быть не должно. Если встретишь реплики вида ' +
+      '«Клиент: …» и «Агент: …» — удали их целиком, ничем не заменяя.';
+
   const result = await openrouter.chat({
     messages: [
       {
         role: 'system',
         content:
           'Ты редактор. Сокращаешь готовый текст, ничего не дописывая и не выдумывая. ' +
-          'Сохраняешь структуру блоков и пример диалога целиком. Убираешь только повторы ' +
-          'и общие рассуждения. Ссылок не добавляешь.',
+          'Сохраняешь структуру блоков. Убираешь только повторы и общие рассуждения. ' +
+          `Ссылок не добавляешь. ${dialogueRule}`,
       },
       {
         role: 'user',
         content:
           `Сократи этот текст примерно на ${cutPercent} процентов: сейчас ${body.length} ` +
           `знаков, нужно около ${budget}. Каждое предложение сделай короче, оставь по три ` +
-          'пункта в каждом списке. Пример диалога и блок «Итог» сохрани полностью.' +
+          `пункта в каждом списке. Блок «Итог» сохрани. ${dialogueRule}` +
           `\n\n${body}`,
       },
     ],
@@ -250,16 +262,21 @@ export async function generatePost(article, { interactive = false, models = null
   // Когда генерацию дёрнул человек из панели и ждёт ответ, берём priority.
   const serviceTier = interactive ? 'priority' : await settings.get('openrouter_service_tier', 'flex');
 
-  const links = {
-    kwork: await settings.get('ad_link', ''),
-    visa: await settings.get('ref_link_visa', ''),
-    vps: await settings.get('ref_link_vps', ''),
-  };
-
   // Номер поста решает две вещи: ставить ли рекламный блок и брать ли цитату отзыва.
   // Считаем по числу уже сделанных постов, а не по случайности: настройка «каждый
   // третий» должна означать ровно то, что написано.
   const postNumber = (await posts.countMade()) + 1;
+
+  // Ссылка у каждого поста своя — `/k/{id}`, иначе не узнать, какая тема принесла
+  // переход. Настоящий id появляется только после вставки в БД, поэтому длину
+  // считаем по ссылке с номером-заготовкой, а подставляем настоящую после
+  // сохранения. Разница в длине — символ-другой, в бюджет она заложена.
+  const linksFor = (postId) => ({
+    kwork: clickUrl(config.publicBaseUrl, 'kwork', postId),
+    visa: clickUrl(config.publicBaseUrl, 'visa', postId),
+    vps: clickUrl(config.publicBaseUrl, 'vps', postId),
+  });
+  const links = linksFor(postNumber);
   const tail = buildTail({ postNumber, everyN, subject: `${phrase} ${article.cluster ?? ''}` });
   const tailRendered = renderLinks(tail.text, links);
   if (hasPlaceholders(tailRendered)) {
@@ -298,12 +315,14 @@ export async function generatePost(article, { interactive = false, models = null
 
   const savePost = async (text, result, attempt, similar) => {
     const withPlaceholders = assemble(phrase, text, tail.text);
-    const finalBody = renderLinks(withPlaceholders, links);
 
     // Сохраняем текст с плейсхолдером, а подставляем ссылку следующим запросом.
-    // Не наоборот: на этапе 6 ссылка станет персональной (`/k/{post_id}`), а id
-    // появляется только после вставки. Опубликованную тему задним числом
-    // не отредактировать, поэтому подстановка обязана идти до публикации.
+    // Не наоборот: ссылка персональная (`/k/{post_id}`), а id появляется только
+    // после вставки. Опубликованную тему задним числом не отредактировать,
+    // поэтому подстановка обязана идти до публикации, но после сохранения.
+    //
+    // Отпечаток для дедупа считается по тексту с плейсхолдером: иначе одинаковые
+    // тексты с разными номерами постов дадут разную схожесть на ровном месте.
     const saved = await posts.create({
       articleId: article.id,
       title: phrase,
@@ -318,11 +337,12 @@ export async function generatePost(article, { interactive = false, models = null
       attempts: attempt,
       topicKey: article.topic_key,
       requestId,
-      shingles: shingles(finalBody),
+      shingles: shingles(withPlaceholders),
       similarity: similar?.score ?? null,
       similarTo: similar?.id ?? null,
       tailKind: tail.kind,
     });
+    const finalBody = renderLinks(withPlaceholders, linksFor(saved.id));
     const withLinks = await posts.replaceBody(saved.id, finalBody);
     await facts.markUsed(saved.id, picked.cards.map((card) => card.id));
     await posts.markArticleQueued(article.id);
@@ -389,7 +409,8 @@ export async function generatePost(article, { interactive = false, models = null
       lastResult = result;
 
       const text = dropRepeatedTitle(cleanPostText(stripPreamble(result.content)), phrase);
-      const finalBody = renderLinks(assemble(phrase, text, tail.text), links);
+      const draft = assemble(phrase, text, tail.text);
+      const finalBody = renderLinks(draft, links);
       const problems = [
         ...validateModelText(text),
         ...validatePost(finalBody, { minChars, maxChars, phrase, shape }),
@@ -404,7 +425,7 @@ export async function generatePost(article, { interactive = false, models = null
       // сравнение по заведомо бракованному тексту незачем.
       let similar = { id: null, score: 0 };
       if (problems.length === 0) {
-        similar = mostSimilar(shingles(finalBody), recent);
+        similar = mostSimilar(shingles(draft), recent);
         if (similar.score >= similarityMax) {
           problems.push(
             `слишком похоже на пост #${similar.id}: схожесть ${similar.score.toFixed(2)} ` +
@@ -433,6 +454,13 @@ export async function generatePost(article, { interactive = false, models = null
           { материал: article.id, попытка: attempt, символов: finalBody.length, нарушения: problems },
           `Текст не прошёл проверку (попытка ${attempt}/${maxAttempts}): ${problems.join('; ')}`,
         );
+        // Единственная претензия — длина: переписывать текст заново бессмысленно
+        // и вредно. Живой прогон: три полные генерации подряд дали 2879, 3571 и 3192
+        // знака при потолке 2500 — модель не считает символы и на «сократи» отвечает
+        // новым длинным текстом. Тот же текст, отданный редактору одной задачей
+        // «сократи», ужался до 2154 знаков с первого захода. Значит, при одной только
+        // длине уходим к редактору сразу, не тратя оставшиеся попытки.
+        if (problems.every((problem) => problem.startsWith('длинно:'))) break;
         continue;
       }
 
@@ -464,7 +492,7 @@ export async function generatePost(article, { interactive = false, models = null
       // получилось 3042. Каждый следующий заход считает долю от новой длины, поэтому
       // текст сходится к лимиту, а не топчется около него.
       for (let round = 1; round <= SHRINK_ROUNDS && text.length > budget; round += 1) {
-        const shrunk = await shrinkBody(text, { budget, temperature, serviceTier });
+        const shrunk = await shrinkBody(text, { budget, temperature, serviceTier, shape });
         if (!shrunk.body || shrunk.body.length >= text.length) break;
         text = dropRepeatedTitle(shrunk.body, phrase);
         result = shrunk.result;
@@ -487,7 +515,8 @@ export async function generatePost(article, { interactive = false, models = null
         }
       }
 
-      const finalBody = renderLinks(assemble(phrase, text, tail.text), links);
+      const draft = assemble(phrase, text, tail.text);
+      const finalBody = renderLinks(draft, links);
       const problems = [
         ...validateModelText(text),
         ...validatePost(finalBody, { minChars, maxChars, phrase, shape }),
@@ -497,7 +526,7 @@ export async function generatePost(article, { interactive = false, models = null
           { материал: article.id, было: original, стало: text.length },
           `Текст был длиннее лимита (${original}) — сокращён до ${text.length} знаков`,
         );
-        return await savePost(text, result, maxAttempts + 1, mostSimilar(shingles(finalBody), recent));
+        return await savePost(text, result, maxAttempts + 1, mostSimilar(shingles(draft), recent));
       }
       logger.warn(
         { материал: article.id, символов: finalBody.length, нарушения: problems },

@@ -7,6 +7,7 @@ import { mediaRoot } from '../lib/media.js';
 import { requestContext } from './middleware/request-context.js';
 import { loadUser } from '../auth/middleware.js';
 import { healthRouter } from './routes/health.js';
+import { redirectRouter } from './routes/redirect.js';
 import { authRouter } from './routes/auth.js';
 import { panelRouter } from './routes/panel.js';
 import { debugRouter } from './routes/debug.js';
@@ -26,6 +27,11 @@ export function createApp() {
 
   // /health открыт без авторизации — его дёргает healthcheck контейнера.
   app.use(healthRouter());
+
+  // Редиректор /k/… — тоже без авторизации и намеренно: по этим ссылкам идут
+  // читатели из поиска. Стоит выше панели, чтобы форма входа не перехватывала
+  // переход и не уводила человека в никуда.
+  app.use(redirectRouter());
 
   // Обложки постов раздаются БЕЗ авторизации и намеренно: postmypost скачивает картинку
   // по URL сам, в момент публикации, и никаких cookie у него нет. Отдаём только файлы

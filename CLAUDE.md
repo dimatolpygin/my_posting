@@ -393,6 +393,11 @@ CREATE INDEX ON clicks (created_at) WHERE is_bot = false;
 
 ## Деплой
 
+**Сделано 28.08.2026.** Проект живёт на okhost `193.17.95.54`, панель —
+`https://anastasia-kwork.ru`, контейнер `my-posting-app`, база `my_posting`
+внутри общего `infra-postgres`. Прод описан `docker-compose.okhost.yml`
+(один сервис, без своего Postgres и Caddy), выкат — `deploy/deploy.sh --pull`.
+
 Навык **`/okdeploy2`**, сервер okhost `193.17.95.54` (общие Postgres/Redis/Caddy,
 1 проект = 1 контейнер, автодеплой через GitHub Actions).
 
@@ -438,6 +443,16 @@ CREATE INDEX ON clicks (created_at) WHERE is_bot = false;
   `net.setDefaultAutoSelectFamilyAttemptTimeout(5000)` в `src/lib/http-client.js`.
   Сборка образа отдельно лечится зеркалом `NPM_REGISTRY` в `.env`
   (`https://registry.npmmirror.com`) — там свой резолвер, не Node.
+- **На общем сервере прод — отдельный compose-файл, а не слой поверх базового.**
+  `docker compose -f base -f prod` сервисы ОБЪЕДИНЯЕТ, а не заменяет: свой
+  `postgres` из базового файла поднимется всё равно, а свой `caddy` займёт 80 и 443
+  и уронит соседей по серверу. Плюс `okhost rebuild` вызывает голый `docker compose`
+  без флагов — какой файл считать рабочим, задаётся строкой `COMPOSE_FILE`
+  в серверном `.env`.
+- **`sed -i` по файлу, смонтированному в контейнер, до контейнера не доезжает.**
+  Bind-mount одного файла держит инод, а `sed -i` пишет новый файл на то же имя.
+  Контейнер продолжает видеть старое содержимое сколько угодно долго. Правильно —
+  `cat /tmp/новый > файл` (инод сохраняется) или перезапуск контейнера.
 - **`provider: { require_parameters: true }` в OpenRouter отсекает всех, кроме
   Google.** Он ставится вместе со строгой JSON-схемой и требует от провайдера
   поддержки structured outputs; Anthropic и OpenAI её не заявляют, и запрос

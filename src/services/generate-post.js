@@ -5,6 +5,7 @@ import {
   validateModelText,
   latinWords,
   trimBulletLists,
+  hasAuthorVoice,
 } from '../lib/text-clean.js';
 import { buildTail, renderLinks, hasPlaceholders } from '../lib/post-tail.js';
 import { shingles, mostSimilar } from '../lib/shingle.js';
@@ -164,7 +165,7 @@ function fixInstruction(problems, { budget, length }) {
  * с одной задачей «сократи» работает там, где переписывание с нуля не помогает:
  * модель уже не сочиняет заново, а режет готовое.
  */
-async function shrinkBody(body, { budget, temperature, serviceTier, shape }) {
+async function shrinkBody(body, { budget, temperature, serviceTier, shape, insistVoice = false }) {
   // Доля, а не абсолютное число: «убери примерно четверть текста» модель выполняет
   // заметно точнее, чем «уложись в 2090 знаков» — считать символы она не умеет.
   const cutPercent = Math.max(10, Math.round((1 - budget / body.length) * 100));
@@ -198,6 +199,11 @@ async function shrinkBody(body, { budget, temperature, serviceTier, shape }) {
           `Сократи этот текст примерно на ${cutPercent} процентов: сейчас ${body.length} ` +
           `знаков, нужно около ${budget}. Каждое предложение сделай короче, оставь по три ` +
           `пункта в каждом списке. Блок «Итог» сохрани. ${dialogueRule}` +
+          (insistVoice
+            ? ' В прошлый раз ты убрал из текста все «я», «мне», «у меня» и сделал его ' +
+              'безличным. Так нельзя: сократи текст, но каждое упоминание автора оставь ' +
+              'на месте.'
+            : '') +
           `\n\n${body}`,
       },
     ],
@@ -307,9 +313,13 @@ export async function generatePost(article, { interactive = false, models = null
     );
   }
 
-  // Сколько знаков остаётся модели: общий потолок минус заголовок и хвост.
+  // Сколько знаков остаётся модели: общий потолок минус заголовок и оба блока
+  // со ссылкой. Запас в 16 знаков — это пустые строки между четырьмя частями
+  // готовой темы. Прежние 4 знака считались для сборки из трёх частей, и после
+  // появления верхнего блока текст приезжал к 3011 при потолке 3000: сокращение
+  // отрабатывало три захода и всё равно упиралось в лимит на одиннадцати знаках.
   const budget = maxChars > 0
-    ? Math.max(600, maxChars - phrase.length - tailRendered.length - 4)
+    ? Math.max(600, maxChars - phrase.length - tailRendered.length - 16)
     : 0;
 
   // Тема из очереди ключей читает чужие статьи по своему же запросу, обычный
@@ -512,8 +522,24 @@ export async function generatePost(article, { interactive = false, models = null
       // Несколько заходов: модель сокращает, но недостаточно — с 3426 знаков за раз
       // получилось 3042. Каждый следующий заход считает долю от новой длины, поэтому
       // текст сходится к лимиту, а не топчется около него.
+      // Был ли в исходном тексте автор. Если был, а после сокращения исчез —
+      // заход не принимаем: обезличенный текст всё равно не пройдёт проверку,
+      // и тема потеряется на ровном месте. Живой прогон: 4175 знаков ужались
+      // до 2763 и вместе с водой унесли все «я».
+      const hadVoice = hasAuthorVoice(text);
+
       for (let round = 1; round <= SHRINK_ROUNDS && text.length > budget; round += 1) {
-        const shrunk = await shrinkBody(text, { budget, temperature, serviceTier, shape });
+        let shrunk = await shrinkBody(text, { budget, temperature, serviceTier, shape });
+        if (hadVoice && shrunk.body && !hasAuthorVoice(shrunk.body)) {
+          logger.warn(
+            { материал: article.id, заход: round },
+            'Редактор обезличил текст - повторяю заход с прямым указанием сохранить автора',
+          );
+          shrunk = await shrinkBody(text, {
+            budget, temperature, serviceTier, shape, insistVoice: true,
+          });
+          if (shrunk.body && !hasAuthorVoice(shrunk.body)) break;
+        }
         if (!shrunk.body || shrunk.body.length >= text.length) break;
         text = dropRepeatedTitle(shrunk.body, phrase);
         result = shrunk.result;

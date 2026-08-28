@@ -185,6 +185,11 @@ async function shrinkBody(body, { budget, temperature, serviceTier, shape }) {
         content:
           'Ты редактор. Сокращаешь готовый текст, ничего не дописывая и не выдумывая. ' +
           'Сохраняешь структуру блоков. Убираешь только повторы и общие рассуждения. ' +
+          // Без этой строки редактор вычищает автора вместе с водой: текст ужимается
+          // до нужной длины и падает уже на проверке «в тексте нет автора». Поймано
+          // на живом прогоне — 4090 знаков сжались до 2252 и все «я» исчезли.
+          'Голос автора сохраняешь: «я», «мне», «у меня», «сам», «вы», «вам» должны ' +
+          'остаться там, где они были. Обезличивать текст нельзя. ' +
           `Ссылок не добавляешь. ${dialogueRule}`,
       },
       {
@@ -225,8 +230,24 @@ function dropRepeatedTitle(text, phrase) {
 }
 
 /** Готовая тема: заголовок, текст, хвост. */
-function assemble(phrase, text, tailText) {
-  return `${phrase}\n\n${text}\n\n${tailText}`.replace(/\n{3,}/g, '\n\n').trim();
+function assemble(phrase, text, tail) {
+  const body = String(text ?? '').trim();
+
+  // Верхний блок со ссылкой встаёт ПОСЛЕ первого абзаца, а не перед ним. Перед —
+  // значит между заголовком и текстом, а первые ~200 знаков после заголовка ОК
+  // отдаёт в description страницы: там должна быть суть темы, а не ссылка.
+  const split = body.indexOf('\n\n');
+  const first = split === -1 ? body : body.slice(0, split);
+  const rest = split === -1 ? '' : body.slice(split + 2);
+
+  const parts = tail.head
+    ? [phrase, first, tail.head, rest, tail.text]
+    : [phrase, body, tail.text];
+
+  return parts.filter((part) => String(part).trim().length > 0)
+    .join('\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -278,7 +299,7 @@ export async function generatePost(article, { interactive = false, models = null
   });
   const links = linksFor(postNumber);
   const tail = buildTail({ postNumber, everyN, subject: `${phrase} ${article.cluster ?? ''}` });
-  const tailRendered = renderLinks(tail.text, links);
+  const tailRendered = renderLinks(`${tail.head}\n${tail.text}`, links);
   if (hasPlaceholders(tailRendered)) {
     logger.warn(
       { пост: postNumber, хвост: tail.kind },
@@ -314,7 +335,7 @@ export async function generatePost(article, { interactive = false, models = null
   let lastText = '';
 
   const savePost = async (text, result, attempt, similar) => {
-    const withPlaceholders = assemble(phrase, text, tail.text);
+    const withPlaceholders = assemble(phrase, text, tail);
 
     // Сохраняем текст с плейсхолдером, а подставляем ссылку следующим запросом.
     // Не наоборот: ссылка персональная (`/k/{post_id}`), а id появляется только
@@ -409,7 +430,7 @@ export async function generatePost(article, { interactive = false, models = null
       lastResult = result;
 
       const text = dropRepeatedTitle(cleanPostText(stripPreamble(result.content)), phrase);
-      const draft = assemble(phrase, text, tail.text);
+      const draft = assemble(phrase, text, tail);
       const finalBody = renderLinks(draft, links);
       const problems = [
         ...validateModelText(text),
@@ -515,7 +536,7 @@ export async function generatePost(article, { interactive = false, models = null
         }
       }
 
-      const draft = assemble(phrase, text, tail.text);
+      const draft = assemble(phrase, text, tail);
       const finalBody = renderLinks(draft, links);
       const problems = [
         ...validateModelText(text),

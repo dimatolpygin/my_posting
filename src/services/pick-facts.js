@@ -54,12 +54,10 @@ function take(pool, kind, count, usedIds) {
 /**
  * Собрать начинку.
  *
- * Подбор идёт по каждому типу отдельно: сначала карточки своего кластера, и только
- * если их не осталось — из всей базы. Раньше проверка была общей («хватает ли
- * кластера на весь рецепт»), и это работало плохо: в кластере на девять тем
- * приходится по одной-две карточки возражений, первая же тема их занимает, и весь
- * рецепт целиком уезжал в чужой кластер вместе с задачей и примером. Потипово
- * из своего кластера приходит хотя бы то, что там есть.
+ * Подбор идёт по каждому типу отдельно и только внутри кластера темы. Нехватка
+ * закрывается не чужой карточкой, а её отсутствием: тема без вилки цены хуже темы
+ * с ценой, но тема с ценой не про то — хуже обеих. Пробелы закрывает материал,
+ * прочитанный по тому же поисковому запросу.
  *
  * @param {object} options
  * @param {string} [options.cluster] кластер темы
@@ -73,14 +71,21 @@ export async function pickFacts({ cluster = null, postNumber = 1, avoidIds = [] 
   const recent = await facts.usedInLastPosts(cooldown);
   const exclude = [...new Set([...recent, ...avoidIds])];
 
-  const own = cluster ? await facts.candidates({ cluster, excludeIds: exclude }) : [];
-  const any = await facts.candidates({ cluster: null, excludeIds: exclude });
-  // Последний резерв: снять окно охлаждения. Повтор факта через два поста хуже,
-  // чем пост вообще без цены и возражения, но лучше, чем сорванная генерация.
+  // Карточки только своего кластера. Раньше недостающий тип добирался из всей базы,
+  // и это ломало тему тише, чем любой сбой: в разбор «как оплатить зарубежный сервис»
+  // приезжала карточка про автопубликацию в соцсети, модель честно вплетала её
+  // в текст, и получался пост, где заголовок про одно, а половина абзацев про другое.
+  // Лучше меньше карточек: пробел закрывают чужие статьи по этому же запросу.
+  const own = cluster
+    ? await facts.candidates({ cluster, excludeIds: exclude })
+    : await facts.candidates({ cluster: null, excludeIds: exclude });
+  // Последний резерв: снять окно охлаждения, оставаясь в своём кластере. Повтор факта
+  // через два поста хуже, чем через пять, но лучше, чем тема совсем без цены.
   let relaxed = null;
 
   const usedIds = new Set();
   const byKind = {};
+  // Осталось ради формы результата: чужих кластеров в подборе больше не бывает.
   const foreign = [];
   const missing = [];
 
@@ -91,13 +96,8 @@ export async function pickFacts({ cluster = null, postNumber = 1, avoidIds = [] 
       continue;
     }
     const picked = take(own, step.kind, step.count, usedIds);
-    if (picked.length < step.count) {
-      const extra = take(any, step.kind, step.count - picked.length, usedIds);
-      if (extra.length > 0 && cluster) foreign.push(step.kind);
-      picked.push(...extra);
-    }
     if (picked.length === 0 && step.required) {
-      relaxed = relaxed ?? await facts.candidates({ cluster: null, excludeIds: avoidIds });
+      relaxed = relaxed ?? await facts.candidates({ cluster, excludeIds: avoidIds });
       picked.push(...take(relaxed, step.kind, step.count, usedIds));
     }
     byKind[step.kind] = picked;

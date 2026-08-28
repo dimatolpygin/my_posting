@@ -1593,7 +1593,9 @@ export function panelRouter() {
             : '<p class="hint" style="margin:0">Публиковать нечего: у поста нет обложки.</p>'}
         </div>
         <div class="card">
-          <h2 style="margin-top:0">${esc(post.title)}</h2>
+          <!-- Заголовка отдельной строкой здесь нет намеренно: это первая строка
+               самого текста (из неё Одноклассники делают <title> темы), и вторым
+               заголовком карточка врала бы про то, что уйдёт в группу. -->
           ${post.error ? `<p class="hint">Ошибка: ${esc(post.error)}</p>` : ''}
           <pre style="white-space:pre-wrap;font:inherit;margin:0">${esc(post.body)}</pre>
         </div>`;

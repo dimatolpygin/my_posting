@@ -8,7 +8,8 @@ import {
 } from '../lib/text-clean.js';
 import { buildTail, renderLinks, hasPlaceholders } from '../lib/post-tail.js';
 import { shingles, mostSimilar } from '../lib/shingle.js';
-import { collectMaterial } from './research.js';
+import { collectMaterial, collectForKeyword } from './research.js';
+import { postShape } from '../lib/post-shape.js';
 import { pickFacts, factsToPrompt } from './pick-facts.js';
 import * as prompts from '../repo/prompts.js';
 import * as posts from '../repo/posts.js';
@@ -67,7 +68,7 @@ const MAX_SOURCE_CHARS = 12_000;
  * (порядок «стабильное начало → переменная часть в конце» — на случай, когда провайдеры
  * включат кеш промта).
  */
-function buildUserMessage({ phrase, angle, cluster, factsText, material, budget }) {
+function buildUserMessage({ phrase, angle, cluster, shape, factsText, material, budget }) {
   const lines = [
     `Поисковый запрос: ${phrase}`,
     'Эта фраза уже стоит первой строкой темы. Писать её ещё раз не нужно, ' +
@@ -75,6 +76,14 @@ function buildUserMessage({ phrase, angle, cluster, factsText, material, budget 
   ];
   if (angle) lines.push(`Угол подачи: ${angle}`);
   if (cluster) lines.push(`Направление: ${cluster}`);
+  // Вид темы решает код, а не модель: от него зависит проверка готового текста,
+  // и обе стороны обязаны понимать её одинаково.
+  lines.push(
+    shape === 'продукт'
+      ? 'Вид темы: ПРОДУКТОВАЯ. Пиши по структуре вида Б, блок с диалогом обязателен.'
+      : 'Вид темы: РАЗБОР ВОПРОСА. Пиши по структуре вида А. Блока с диалогом ' +
+        'быть не должно: человек пришёл за ответом, а не за сценкой.',
+  );
 
   if (factsText) {
     lines.push(
@@ -95,7 +104,17 @@ function buildUserMessage({ phrase, angle, cluster, factsText, material, budget 
   }
 
   if (material) {
-    lines.push('', 'Дополнительный материал из открытых источников:', '', material.slice(0, MAX_SOURCE_CHARS));
+    // Материал идёт последним и со своей шапкой (её ставит research.js): там сказано,
+    // что это чужие статьи, что из них брать и чего из них не брать. Без такой рамки
+    // модель принимает выдержки за образец и пересказывает их близко к тексту.
+    lines.push('', material.slice(0, MAX_SOURCE_CHARS));
+  } else {
+    lines.push(
+      '',
+      'Чужих статей по этому запросу прочитать не удалось. Значит, пиши только то, ' +
+        'что есть в фактуре и что знаешь наверняка: ни сумм, ни сроков, ни названий ' +
+        'сервисов из головы.',
+    );
   }
 
   // Лимит длины есть и в промте, но в самом его конце, среди прочих правил, и модель
@@ -214,6 +233,9 @@ export async function generatePost(article, { interactive = false, models = null
   if (!prompt) throw new Error('В БД нет активного промта post_prompt');
 
   const phrase = (article.keyword_phrase || article.topic_name || article.title || '').trim();
+  // Вид темы: разбор вопроса или продуктовая. Считается по самой фразе — от него
+  // зависит и структура в промте, и то, требует ли проверка блок с диалогом.
+  const shape = postShape(phrase);
   if (!phrase) throw new Error(`У материала #${article.id} нет ни фразы ключа, ни названия темы`);
 
   const minChars = await settings.getInt('post_min_chars', 1500);
@@ -252,10 +274,16 @@ export async function generatePost(article, { interactive = false, models = null
     ? Math.max(600, maxChars - phrase.length - tailRendered.length - 4)
     : 0;
 
-  // Сбор материала поиском темам из ключей не нужен: фактура своя, а firecrawl
-  // по запросу «сколько стоит чат-бот для бизнеса» принесёт страницы конкурентов
-  // и потратит бесплатный лимит на то, что мы и так знаем лучше.
-  const research = article.keyword_id ? null : await collectMaterial(article);
+  // Тема из очереди ключей читает чужие статьи по своему же запросу, обычный
+  // материал — ищет по названию проекта. Разворот решения этапа 4: тогда сбор для
+  // ключей был выключен как лишняя трата лимита, потому что «фактура у нас своя».
+  // На живых текстах это оказалось ошибкой: карточки закрывают только то, что мы
+  // делали руками, а на вопрос «как оплатить зарубежный сервис» модель без интернета
+  // пишет то, что считает правдоподобным. Получается уверенный текст, в котором
+  // нечего проверить, — ровно то, ради чего тему открывать не станут.
+  const research = article.keyword_id
+    ? await collectForKeyword(article, { phrase })
+    : await collectMaterial(article);
   const material = research ? research.text : article.content;
 
   const recent = await posts.recentShingles(comparePosts);
@@ -328,6 +356,7 @@ export async function generatePost(article, { interactive = false, models = null
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const userMessage = buildUserMessage({
       phrase,
+      shape,
       angle: article.angle,
       cluster: article.cluster,
       factsText: factsToPrompt(picked.cards),
@@ -363,7 +392,7 @@ export async function generatePost(article, { interactive = false, models = null
       const finalBody = renderLinks(assemble(phrase, text, tail.text), links);
       const problems = [
         ...validateModelText(text),
-        ...validatePost(finalBody, { minChars, maxChars, phrase }),
+        ...validatePost(finalBody, { minChars, maxChars, phrase, shape }),
       ];
       // Ответ упёрся в потолок токенов: текст оборван на полуслове, и остальные
       // претензии к нему разбирать бессмысленно.
@@ -461,7 +490,7 @@ export async function generatePost(article, { interactive = false, models = null
       const finalBody = renderLinks(assemble(phrase, text, tail.text), links);
       const problems = [
         ...validateModelText(text),
-        ...validatePost(finalBody, { minChars, maxChars, phrase }),
+        ...validatePost(finalBody, { minChars, maxChars, phrase, shape }),
       ];
       if (problems.length === 0) {
         logger.info(
